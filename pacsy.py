@@ -162,6 +162,8 @@ class Pacsy:
         self.total_net=""
         self.status="Warte auf pacman ..."
         self.prompt=""
+        self.last_pacman=""
+        self.started=False
         self.demo_start=time.monotonic()
 
     def add_pkg(self,repo:str,name:str,old:str="",new:str="")->Package:
@@ -180,6 +182,8 @@ class Pacsy:
         for raw in re.split(r"[\r\n]+",clean):
             line=raw.strip()
             if not line: continue
+            self.last_pacman=line
+            self.started=True
             smeta=SIZE_LABEL_RE.match(line)
             if smeta:
                 label,value=smeta.group(1).lower(),smeta.group(2)
@@ -187,7 +191,9 @@ class Pacsy:
                 elif "installed" in label: self.total_installed=value
                 elif "net" in label: self.total_net=value
             low=line.lower()
-            if ":: retrieving packages" in low:
+            if "synchronizing package databases" in low:
+                self.status="Paketdatenbanken werden synchronisiert ..."
+            elif ":: retrieving packages" in low or "retrieving packages" in low:
                 self.status="Pakete werden empfangen ..."
             elif ":: processing package changes" in low:
                 self.status="Paketänderungen werden verarbeitet ..."
@@ -197,6 +203,10 @@ class Pacsy:
                 self.status="Nach in Konflikt stehenden Paketen wird gesucht ..."
             elif ":: starting full system upgrade" in low:
                 self.status="Vollständige Systemaktualisierung wird gestartet ..."
+            elif "there is nothing to do" in low:
+                self.status="System ist bereits aktuell."
+            elif "proceed with installation" in low:
+                self.prompt="Installation fortsetzen? [J/n]"
 
             m=PKG_LINE_RE.match(line)
             if m:
@@ -518,9 +528,12 @@ class Pacsy:
             print("pacsy: sudo authentication failed.",file=sys.stderr)
             return 1
 
+        self.status="Starte pacman -Syu ..."
         pid,fd=os.forkpty()
-        if pid==0: os.execvp("sudo",["sudo","-n","pacman","-Syu"])
-        old=termios.tcgetattr(sys.stdin); tty.setraw(sys.stdin.fileno())
+        if pid==0:
+            os.execvp("sudo",["sudo","-n","pacman","-Syu"])
+        old=termios.tcgetattr(sys.stdin)
+        tty.setraw(sys.stdin.fileno())
         try:
             while True:
                 readable,_,_=select.select([fd,sys.stdin],[],[],.08)
@@ -535,8 +548,17 @@ class Pacsy:
                 self.screen()
                 try:
                     waited,status=os.waitpid(pid,os.WNOHANG)
-                    if waited==pid: return os.waitstatus_to_exitcode(status)
-                except ChildProcessError: return 0
+                    if waited==pid:
+                        code=os.waitstatus_to_exitcode(status)
+                        if code==0 and not self.packages and self.status not in ("System ist bereits aktuell.",):
+                            self.status="pacman beendet — keine Paketliste empfangen."
+                        self.screen()
+                        time.sleep(0.35)
+                        return code
+                except ChildProcessError:
+                    self.status="pacman-Prozess beendet."
+                    self.screen()
+                    return 0
         except KeyboardInterrupt:
             try: os.kill(pid,signal.SIGINT)
             except ProcessLookupError: pass
