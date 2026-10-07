@@ -432,8 +432,17 @@ class Pacsy:
             print("pacsy: pacman und sudo werden benötigt.",file=sys.stderr); return 127
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             print("pacsy: Live-Modus benötigt ein interaktives TTY.",file=sys.stderr); return 2
+        # Authenticate before entering the raw PTY dashboard. Otherwise the
+        # renderer continuously clears sudo's password prompt and can make a
+        # correct password look like it was rejected.
+        print(f"{YELLOW}sudo authentication required...{RESET}")
+        auth=os.system("sudo -v")
+        if auth != 0:
+            print("pacsy: sudo authentication failed.",file=sys.stderr)
+            return 1
+
         pid,fd=os.forkpty()
-        if pid==0: os.execvp("sudo",["sudo","pacman","-Syu"])
+        if pid==0: os.execvp("sudo",["sudo","-n","pacman","-Syu"])
         old=termios.tcgetattr(sys.stdin); tty.setraw(sys.stdin.fileno())
         try:
             while True:
