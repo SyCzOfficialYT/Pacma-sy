@@ -247,22 +247,35 @@ class Pacsy:
         self.status="Pakete werden empfangen ..."; self.prompt="Installation fortsetzen? [J/n]"
 
     def lane_game(self, lane:RepoLane, width:int)->str:
-        width=max(12,min(30,width))
+        """Render the reference-style miniature Pac-Man level for a repo lane."""
+        width=max(14,min(30,width))
         pct=max(0,min(100,lane.percent))
-        pac_i=min(width-1,int(pct*max(0,width-1)/100))
-        ghost_i=min(width-1,max(0,int(((pct+31)%100)*max(0,width-1)/100)))
-        fruit_i=min(width-1,max(0,int(((pct+67)%100)*max(0,width-1)/100)))
-        chars=[]
+        now=time.monotonic()
+
+        # Pac-Man advances with the real download percentage. Ghost and fruit
+        # positions animate independently, so every lane looks alive.
+        pac_i=min(width-1,int(pct*(width-1)/100))
+        ghost_i=int(((now*5.0)+(lane.percent*0.31)) % width)
+        ghost2_i=int(((now*3.2)+(lane.percent*0.57)+width/3) % width)
+        fruit_i=int(((now*1.7)+(lane.percent*0.67)+width*0.72) % width)
+
+        row=[]
         for i in range(width):
             if i==pac_i:
-                chars.append(f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET}")
+                row.append(f"{YELLOW}{PAC_FRAMES[int(now*8)%2]}{RESET}")
             elif i==ghost_i:
-                chars.append(f"{MAGENTA}●{RESET}")
+                row.append(f"{RED}●{RESET}")
+            elif i==ghost2_i:
+                row.append(f"{MAGENTA}●{RESET}")
             elif i==fruit_i:
-                chars.append(f"{RED}◆{RESET}")
+                row.append(f"{RED}◆{RESET}")
+            elif i<=pac_i:
+                row.append(f"{YELLOW}·{RESET}")
             else:
-                chars.append(f"{YELLOW}·{RESET}" if i<pac_i else f"{GRAY}·{RESET}")
-        return "".join(chars)
+                row.append(f"{GRAY}·{RESET}")
+
+        # A box around the lane makes it visually match the reference image.
+        return f"{YELLOW}┌{RESET}{''.join(row)}{YELLOW}┐{RESET}"
 
     def lane(self,lane:RepoLane,width:int)->str:
         colors={"core":BLUE,"extra":YELLOW,"multilib":RED,"cachyos":CYAN}
@@ -350,10 +363,10 @@ class Pacsy:
             if compact:
                 colors={"core":BLUE,"extra":YELLOW,"multilib":RED,"cachyos":CYAN}
                 rc=colors.get(repo,CYAN)
-                game=self.lane_game(lane,max(12,min(21,cols-57)))
+                game=self.lane_game(lane,max(14,min(22,cols-59)))
                 repo_body.append(
                     f"{rc}{repo:<8}{RESET} {lane.current[:13]:<13} "
-                    f"{lane.percent:3d}% {rc}│{RESET}{game}{rc}│{RESET}"
+                    f"{lane.percent:3d}% {game}"
                 )
             else:
                 repo_body.append("  "+self.lane(lane,cols))
