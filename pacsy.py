@@ -309,7 +309,7 @@ class Pacsy:
                 lines.append(f"{CYAN}{name}{RESET} {stats}  {self.one_line_game(p,max(20,cols-48))}")
         lines.append(f"{CYAN}╰─"+"─"*max(2,min(cols-4,95))+f"╯{RESET}")
         lines.append("")
-        lines.append(f"{CYAN}◆{RESET} {BOLD}Gesamt{RESET}  ({len(self.packages)}/{self.total_count or len(self.packages)})   {self.total_size or '--'}   {self.total_percent:3d}%")
+        lines.append(f"{CYAN}◆{RESET} {BOLD}Gesamt{RESET}  ({len(self.packages)}/{self.total_count or len(self.packages)})   Download {self.total_size or '--'}   Installiert {self.total_installed or '--'}   Netto {self.total_net or '--'}   {self.total_percent:3d}%")
         lines.append(f"{DIM}Ctrl+C beendet die Ansicht; Eingaben werden unverändert an pacman weitergereicht.{RESET}")
         return "\n".join(lines)
 
