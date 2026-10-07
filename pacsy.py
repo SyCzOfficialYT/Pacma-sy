@@ -180,6 +180,12 @@ class Pacsy:
         for raw in re.split(r"[\r\n]+",clean):
             line=raw.strip()
             if not line: continue
+            smeta=SIZE_LABEL_RE.match(line)
+            if smeta:
+                label,value=smeta.group(1).lower(),smeta.group(2)
+                if "download" in label: self.total_size=value
+                elif "installed" in label: self.total_installed=value
+                elif "net" in label: self.total_net=value
             low=line.lower()
             if ":: retrieving packages" in low:
                 self.status="Pakete werden empfangen ..."
@@ -195,6 +201,7 @@ class Pacsy:
             m=PKG_LINE_RE.match(line)
             if m:
                 self.add_pkg(m.group("repo"),m.group("name"),m.group("old"),m.group("new"))
+                self.total_count=len(self.packages)
                 self.prompt="Installation fortsetzen? [J/n]"
                 continue
 
