@@ -30,6 +30,7 @@ ANSI_RE=re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 PCT_RE=re.compile(r"(?<!\d)(\d{1,3})%")
 SPEED_RE=re.compile(r"(\d+(?:[.,]\d+)?)\s*(KiB|MiB|GiB)/s")
 TIME_RE=re.compile(r"(?<!\d)(\d{2}:\d{2})(?!\d)")
+SIZE_LABEL_RE=re.compile(r"^(Total Download Size|Total Installed Size|Net Upgrade Size):\s*([0-9.,]+\s*(?:KiB|MiB|GiB))",re.I)
 PKG_LINE_RE=re.compile(r"^\s*(?P<repo>[A-Za-z0-9_.+-]+)/(?P<name>[^\s]+)\s+(?P<old>\S+)\s+->\s+(?P<new>\S+)")
 DOWNLOAD_RE=re.compile(r"(?P<name>[A-Za-z0-9@._+:-]+(?:-[0-9][A-Za-z0-9._:+~-]*)?-x86_64(?:\.pkg\.tar\.[a-z0-9]+)?)")
 
