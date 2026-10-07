@@ -368,9 +368,11 @@ class Pacsy:
                 return f"{accent}╰" + "─" * (w - 2) + f"╯{RESET}"
 
             def row(text="", accent=CYAN):
-                # One hard invariant: visible width <= w.
-                text = clip(text, inner)
-                return f"{accent}│{RESET} {text:<{inner-1}}{accent}│{RESET}"
+                # Padding must use visible width, not Python len(), because ANSI
+                # colour sequences do not occupy terminal cells.
+                text = clip(text, inner-1)
+                pad = max(0, inner-1-self._vlen(text))
+                return f"{accent}│{RESET} {text}{' '*pad}{accent}│{RESET}"
 
             lines.append(top(f"CACHYOS  PACMA-SY  {mode} • pacman -Syu"))
             lines.append(row(f"{YELLOW}{PAC_FRAMES[int(now*9)%2]}{RESET} "
@@ -394,7 +396,7 @@ class Pacsy:
             # Repositories: status + a real Pac-Man lane. The lane is calculated
             # from the exact remaining width, so it can never wrap on a phone.
             lines.append(top("Repository / Download-Fortschritt"))
-            trackw = max(18, w - 5)
+            trackw = max(18, w - 6)
             for repo in REPOS:
                 lane = self.lanes[repo]
                 rc = colors[repo]
