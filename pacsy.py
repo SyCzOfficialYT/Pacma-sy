@@ -257,9 +257,9 @@ class Pacsy:
             if i==pac_i:
                 chars.append(f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET}")
             elif i==ghost_i:
-                chars.append(f"{MAGENTA}👻{RESET}")
+                chars.append(f"{MAGENTA}●{RESET}")
             elif i==fruit_i:
-                chars.append(f"{RED}🍓{RESET}")
+                chars.append(f"{RED}◆{RESET}")
             else:
                 chars.append(f"{YELLOW}·{RESET}" if i<pac_i else f"{GRAY}·{RESET}")
         return "".join(chars)
@@ -298,7 +298,7 @@ class Pacsy:
         chars=[]
         for i in range(length):
             if i==filled: chars.append(f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET}")
-            elif i==ghost_pos: chars.append(f"{RED}A{RESET}")
+            elif i==ghost_pos: chars.append(f"{MAGENTA}●{RESET}")
             elif i<filled: chars.append(f"{YELLOW}·{RESET}")
             else: chars.append(f"{GRAY}·{RESET}")
         return f"{CYAN}┌"+"".join(chars)+f"┐{RESET}"
