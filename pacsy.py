@@ -321,24 +321,37 @@ class Pacsy:
         n=int(width*self.total_percent/100)
         return f"{GREEN}"+"━"*n+f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET}{GRAY}"+"─"*max(0,width-n-1)+f"{RESET}"
 
+    @staticmethod
+    def _visible_len(text:str)->int:
+        return len(strip_ansi(text))
+
+    @classmethod
+    def _fit_line(cls,text:str,width:int)->str:
+        # Never let a dashboard row wrap on Android/Termux.
+        if cls._visible_len(text) <= width:
+            return text
+        clean=strip_ansi(text)
+        return clean[:max(0,width-1)]+"…"
+
     def _box(self, title:str, body:List[str], width:int, accent:str=CYAN)->List[str]:
-        width=max(48,width)
-        # Keep the frame width tied to the physical terminal. Never slice a
-        # string containing ANSI escapes: doing so can corrupt escape sequences
-        # and make Android wrap the next line.
-        clean_title=title[:max(8,width-8)]
+        width=max(40,width)
+        inner=width-2
+        clean_title=strip_ansi(title)[:max(8,inner-6)]
         top=f"╭─ {clean_title} "+"─"*max(1,width-len(clean_title)-4)+"╮"
         bottom="╰"+"─"*(width-2)+"╯"
         out=[f"{accent}{top}{RESET}"]
-        out.extend(body)
+        for line in body:
+            out.append(self._fit_line(line,inner))
         out.append(f"{accent}{bottom}{RESET}")
         return out
 
     def render(self)->str:
         cols,rows=shutil.get_terminal_size((80,40))
-        cols=max(48,cols)
-        compact=cols<96
-        inner=cols-2
+        # Termux can report a drawable width that is a little smaller while
+        # the Android keyboard is open, so keep a small safety margin.
+        compact=cols<110
+        render_width=max(40,cols-4 if compact else cols-2)
+        inner=render_width-2
         lines=[]
 
         # Reference-style header: compact on Termux, wide on desktop.
@@ -350,10 +363,10 @@ class Pacsy:
         )
         lines.append(f"{CYAN}╰"+"─"*(inner-2)+"╯{RESET}")
         lines.append("")
-        lines.append(f"{CYAN}◆{RESET} {BOLD}Systemstatus{RESET}  {self.status[:cols-24]}")
+        lines.append(f"{CYAN}◆{RESET} {BOLD}Systemstatus{RESET}  {self.status[:max(10,render_width-24)]}")
         lines.append(
             f"{GREEN}◆{RESET} Gesamtfortschritt {self.total_percent:3d}% "
-            f"{self.master_bar(max(12,min(34,cols-38)))}"
+            f"{self.master_bar(max(12,min(30,render_width-38)))}"
         )
         lines.append("")
 
@@ -363,23 +376,23 @@ class Pacsy:
             if compact:
                 colors={"core":BLUE,"extra":YELLOW,"multilib":RED,"cachyos":CYAN}
                 rc=colors.get(repo,CYAN)
-                game=self.lane_game(lane,max(14,min(22,cols-59)))
+                game=self.lane_game(lane,max(14,min(20,render_width-58)))
                 repo_body.append(
                     f"{rc}{repo:<8}{RESET} {lane.current[:13]:<13} "
                     f"{lane.percent:3d}% {game}"
                 )
             else:
                 repo_body.append("  "+self.lane(lane,cols))
-        lines += self._box("Repository / Download-Fortschritt",repo_body,cols)
+        lines += self._box("Repository / Download-Fortschritt",repo_body,render_width)
 
         lines.append("")
         # Reference image has a dense package table. Keep five useful rows on
         # Android and eight on wide terminals.
         table_rows=5 if compact else 9
-        table=self.package_table(table_rows,cols)
+        table=self.package_table(table_rows,render_width)
         lines += self._box(
             f"{PAC_FRAMES[int(time.monotonic()*5)%2]}  Pakete ({len(self.packages)})",
-            table,cols
+            table,render_width
         )
 
         lines.append("")
@@ -390,21 +403,21 @@ class Pacsy:
         else:
             for p in visible:
                 if compact:
-                    barw=max(12,min(22,cols-52))
+                    barw=max(12,min(20,render_width-52))
                     stats=f"{p.percent:3d}%"
                     game_body.append(
-                        f"{CYAN}{p.name[:12]:<12}{RESET} {stats} "
+                        f"{CYAN}{p.name[:10]:<10}{RESET} {stats} "
                         f"{self.one_line_game(p,barw)}"
                     )
                 else:
                     stats=f"{p.speed or '--':>10} {p.eta or '--:--':>5} {p.percent:3d}%"
                     game_body.append(
-                        f"{CYAN}{p.name[:26]:<26}{RESET} {stats} "
-                        f"{self.one_line_game(p,max(20,cols-48))}"
+                        f"{CYAN}{p.name[:22]:<22}{RESET} {stats} "
+                        f"{self.one_line_game(p,max(16,render_width-44))}"
                     )
         lines += self._box(
             f"{PAC_FRAMES[int(time.monotonic()*5)%2]}  {self.prompt or 'Downloadfortschritt'}",
-            game_body,cols
+            game_body,render_width
         )
 
         lines.append("")
