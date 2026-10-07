@@ -516,12 +516,13 @@ class Pacsy:
 
     def run_live(self)->int:
         if not shutil.which("pacman") or not shutil.which("sudo"):
-            print("pacsy: pacman und sudo werden benötigt.",file=sys.stderr); return 127
+            print("pacsy: pacman und sudo werden benötigt.",file=sys.stderr)
+            return 127
         if not sys.stdin.isatty() or not sys.stdout.isatty():
-            print("pacsy: Live-Modus benötigt ein interaktives TTY.",file=sys.stderr); return 2
-        # Authenticate before entering the raw PTY dashboard. Otherwise the
-        # renderer continuously clears sudo's password prompt and can make a
-        # correct password look like it was rejected.
+            print("pacsy: Live-Modus benötigt ein interaktives TTY.",file=sys.stderr)
+            return 2
+
+        # Authenticate before the dashboard takes the terminal into raw mode.
         print(f"{YELLOW}sudo authentication required...{RESET}")
         auth=os.system("sudo -v")
         if auth != 0:
@@ -531,43 +532,84 @@ class Pacsy:
         self.status="Starte pacman -Syu ..."
         pid,fd=os.forkpty()
         if pid==0:
-            os.execvp("sudo",["sudo","-n","pacman","-Syu"])
+            # Force a stable parser language. Pacman remains interactive through
+            # the PTY, but its messages are now deterministic for our renderer.
+            env=os.environ.copy()
+            env["LANG"]="C"
+            env["LC_ALL"]="C"
+            os.execvpe("sudo",["sudo","-n","pacman","-Syu"],env)
+
         old=termios.tcgetattr(sys.stdin)
         tty.setraw(sys.stdin.fileno())
+        exit_code=None
+        eof=False
+
         try:
-            while True:
+            while not eof:
                 readable,_,_=select.select([fd,sys.stdin],[],[],.08)
+
                 if fd in readable:
-                    try: data=os.read(fd,65536)
-                    except OSError: data=b""
-                    if not data: break
-                    self.parse(data.decode("utf-8",errors="replace"))
+                    try:
+                        data=os.read(fd,65536)
+                    except OSError:
+                        data=b""
+                    if data:
+                        self.parse(data.decode("utf-8",errors="replace"))
+                    else:
+                        eof=True
+
                 if sys.stdin in readable:
                     data=os.read(sys.stdin.fileno(),4096)
-                    if data: os.write(fd,data)
+                    if data:
+                        os.write(fd,data)
+
+                # Do not leave the user staring at an empty 0% dashboard.
                 self.screen()
+
                 try:
                     waited,status=os.waitpid(pid,os.WNOHANG)
                     if waited==pid:
-                        code=os.waitstatus_to_exitcode(status)
-                        if code==0 and not self.packages and self.status not in ("System ist bereits aktuell.",):
-                            self.status="pacman beendet — keine Paketliste empfangen."
-                        self.screen()
-                        time.sleep(0.35)
-                        return code
+                        exit_code=os.waitstatus_to_exitcode(status)
+                        break
                 except ChildProcessError:
-                    self.status="pacman-Prozess beendet."
-                    self.screen()
-                    return 0
+                    exit_code=0
+                    break
+
+            # The PTY can reach EOF before waitpid() becomes observable. Always
+            # reap the child and classify the final state.
+            if exit_code is None:
+                try:
+                    _,status=os.waitpid(pid,0)
+                    exit_code=os.waitstatus_to_exitcode(status)
+                except ChildProcessError:
+                    exit_code=0
+
+            if exit_code==0:
+                if self.packages:
+                    self.status="pacman erfolgreich beendet."
+                else:
+                    self.status="System ist bereits aktuell."
+            else:
+                self.status=f"pacman beendet (Exit-Code {exit_code})."
+
+            self.screen()
+            time.sleep(0.5)
+            return exit_code
+
         except KeyboardInterrupt:
-            try: os.kill(pid,signal.SIGINT)
-            except ProcessLookupError: pass
+            try:
+                os.kill(pid,signal.SIGINT)
+            except ProcessLookupError:
+                pass
             return 130
         finally:
             termios.tcsetattr(sys.stdin,termios.TCSADRAIN,old)
-            try: os.close(fd)
-            except OSError: pass
-            sys.stdout.write("\033[0m\033[?25h\n"); sys.stdout.flush()
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            sys.stdout.write("\033[0m\033[?25h\n")
+            sys.stdout.flush()
 
 def main()->int:
     parser=argparse.ArgumentParser(description="CachyOS Pac-Man themed pacman wrapper")
