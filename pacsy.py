@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Pacma-sy: Pac-Man styled live pacman UI for CachyOS/Arch.
+"""Pacma-sy - CachyOS pacman UI with a Pac-Man themed dashboard.
 
-Pure stdlib implementation. pacman stays attached to a PTY so the real
-transaction and interactive prompts remain intact.
+The real pacman transaction runs in a PTY. Pacma-sy only renders a dashboard
+around it; keyboard input is forwarded unchanged to pacman.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -23,471 +22,347 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
-RESET = "\033[0m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-CYAN = "\033[96m"
-BLUE = "\033[94m"
-GREEN = "\033[92m"
-YELLOW = "\033[93m"
-RED = "\033[91m"
-MAGENTA = "\033[95m"
-WHITE = "\033[97m"
-GRAY = "\033[90m"
+RESET="\033[0m"; BOLD="\033[1m"; DIM="\033[2m"
+CYAN="\033[96m"; BLUE="\033[94m"; GREEN="\033[92m"; YELLOW="\033[93m"
+RED="\033[91m"; MAGENTA="\033[95m"; WHITE="\033[97m"; GRAY="\033[90m"
 
-ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
-PROGRESS_RE = re.compile(r"(\d{1,3})%")
-PKG_RE = re.compile(
-    r"([A-Za-z0-9@._+:-]+(?:-[0-9][A-Za-z0-9._:+~-]*)?-x86_64(?:\.pkg\.tar\.[a-z0-9]+)?)"
-)
-SPEED_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(KiB|MiB|GiB)/s")
-SIZE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(KiB|MiB|GiB)")
-TIME_RE = re.compile(r"(\d{2}:\d{2})")
+ANSI_RE=re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+PCT_RE=re.compile(r"(?<!\d)(\d{1,3})%")
+SPEED_RE=re.compile(r"(\d+(?:[.,]\d+)?)\s*(KiB|MiB|GiB)/s")
+TIME_RE=re.compile(r"(?<!\d)(\d{2}:\d{2})(?!\d)")
+PKG_LINE_RE=re.compile(r"^\s*(?P<repo>[A-Za-z0-9_.+-]+)/(?P<name>[^\s]+)\s+(?P<old>\S+)\s+->\s+(?P<new>\S+)")
+DOWNLOAD_RE=re.compile(r"(?P<name>[A-Za-z0-9@._+:-]+(?:-[0-9][A-Za-z0-9._:+~-]*)?-x86_64(?:\.pkg\.tar\.[a-z0-9]+)?)")
 
-# Single-cell glyphs only. This keeps the renderer stable on narrow Android
-# terminals where emoji can occupy two columns.
-PAC = "◕"
-PAC_ALT = "◔"
-GHOSTS = ("A", "B", "M")
+Point=Tuple[int,int]
+PAC_FRAMES=("◕","◔")
+REPOS=("core","extra","multilib","cachyos")
 
-Point = Tuple[int, int]
+def seed_for(text:str)->int:
+    return int.from_bytes(hashlib.sha256(text.encode()).digest()[:8],"big")
 
-
-def stable_seed(name: str) -> int:
-    return int.from_bytes(hashlib.sha256(name.encode("utf-8")).digest()[:8], "big")
-
-
-def neighbours(p: Point, height: int, width: int) -> List[Point]:
-    y, x = p
-    candidates = [(y, x + 1), (y + 1, x), (y, x - 1), (y - 1, x)]
-    return [(ny, nx) for ny, nx in candidates if 0 <= ny < height and 0 <= nx < width]
-
+def strip_ansi(text:str)->str:
+    return ANSI_RE.sub("",text)
 
 class Maze:
-    """Generate a connected, random Pac-Man-like maze for one package."""
-
-    def __init__(self, seed: int, width: int = 31, height: int = 11) -> None:
-        self.width = width if width % 2 == 1 else width - 1
-        self.height = height if height % 2 == 1 else height - 1
-        self.rng = random.Random(seed)
-        self.grid = [["#" for _ in range(self.width)] for _ in range(self.height)]
+    def __init__(self,seed:int,width:int=35,height:int=7)->None:
+        self.width=width if width%2 else width-1
+        self.height=height if height%2 else height-1
+        self.rng=random.Random(seed)
+        self.grid=[["#"]*self.width for _ in range(self.height)]
         self._generate()
-        self.start = (1, 1)
-        self.goal = (self.height - 2, self.width - 2)
-        self.path = self._shortest_path(self.start, self.goal)
-        self.power = {
-            (1, self.width - 2),
-            (self.height - 2, 1),
-            self.goal,
-        }
+        self.start=(1,1); self.goal=(self.height-2,self.width-2)
+        self.path=self._path(self.start,self.goal)
+        self.power={(1,self.width-2),(self.height-2,1),self.goal}
 
-    def _generate(self) -> None:
-        stack = [(1, 1)]
-        self.grid[1][1] = "."
+    def _generate(self)->None:
+        stack=[(1,1)]; self.grid[1][1]="."
         while stack:
-            y, x = stack[-1]
-            choices = []
-            for dy, dx in ((0, 2), (2, 0), (0, -2), (-2, 0)):
-                ny, nx = y + dy, x + dx
-                if 1 <= ny < self.height - 1 and 1 <= nx < self.width - 1:
-                    if self.grid[ny][nx] == "#":
-                        choices.append((ny, nx))
-            if not choices:
-                stack.pop()
-                continue
-            ny, nx = self.rng.choice(choices)
-            self.grid[(y + ny) // 2][(x + nx) // 2] = "."
-            self.grid[ny][nx] = "."
-            stack.append((ny, nx))
+            y,x=stack[-1]; options=[]
+            for dy,dx in ((0,2),(2,0),(0,-2),(-2,0)):
+                ny,nx=y+dy,x+dx
+                if 1<=ny<self.height-1 and 1<=nx<self.width-1 and self.grid[ny][nx]=="#":
+                    options.append((ny,nx))
+            if not options:
+                stack.pop(); continue
+            ny,nx=self.rng.choice(options)
+            self.grid[(y+ny)//2][(x+nx)//2]="."
+            self.grid[ny][nx]="."
+            stack.append((ny,nx))
+        for _ in range(max(4,self.width//4)):
+            y=self.rng.randrange(1,self.height-1,2); x=self.rng.randrange(1,self.width-1,2)
+            dy,dx=self.rng.choice(((0,1),(1,0),(0,-1),(-1,0)))
+            if 0<=y+dy<self.height and 0<=x+dx<self.width:
+                self.grid[y+dy][x+dx]="."
 
-        # Add a few loops so it feels closer to a Pac-Man board than a
-        # strict perfect maze.
-        for _ in range(max(3, self.width // 5)):
-            y = self.rng.randrange(1, self.height - 1, 2)
-            x = self.rng.randrange(1, self.width - 1, 2)
-            for dy, dx in ((0, 1), (1, 0), (0, -1), (-1, 0)):
-                ny, nx = y + dy, x + dx
-                if 1 <= ny < self.height - 1 and 1 <= nx < self.width - 1:
-                    self.grid[ny][nx] = "."
+    def floor(self,p:Point)->bool:
+        y,x=p
+        return 0<=y<self.height and 0<=x<self.width and self.grid[y][x]!="#"
 
-    def _shortest_path(self, start: Point, goal: Point) -> List[Point]:
-        queue = deque([start])
-        parent = {start: None}
-        while queue:
-            current = queue.popleft()
-            if current == goal:
-                break
-            for nxt in neighbours(current, self.height, self.width):
-                y, x = nxt
-                if self.grid[y][x] == "#" or nxt in parent:
-                    continue
-                parent[nxt] = current
-                queue.append(nxt)
-
-        if goal not in parent:
-            return [start]
-
-        path = []
-        current = goal
-        while current is not None:
-            path.append(current)
-            current = parent[current]
-        return list(reversed(path))
-
-    def floor(self, p: Point) -> bool:
-        y, x = p
-        return 0 <= y < self.height and 0 <= x < self.width and self.grid[y][x] != "#"
-
-    def legal(self, p: Point) -> List[Point]:
-        return [n for n in neighbours(p, self.height, self.width) if self.floor(n)]
-
-
-@dataclass
-class PackageState:
-    name: str
-    percent: int = 0
-    speed: str = ""
-    eta: str = ""
-    size: str = ""
-    seed: int = 0
-    maze: Maze | None = None
-    ghosts: List[Point] = field(default_factory=list)
-    ghost_colors: List[str] = field(default_factory=lambda: [RED, MAGENTA, CYAN])
-    last_update: float = 0.0
-    finished_at: float = 0.0
-
-    def __post_init__(self) -> None:
-        self.seed = stable_seed(self.name)
-        self.maze = Maze(self.seed)
-        rng = random.Random(self.seed ^ 0xC0FFEE)
-        candidates = [
-            p for p in self.maze.path[2:-2]
-            if p not in self.maze.power
-        ]
-        if not candidates:
-            candidates = [self.maze.start]
-        self.ghosts = [rng.choice(candidates) for _ in range(3)]
-
-    @property
-    def path(self) -> List[Point]:
-        return self.maze.path if self.maze else []
-
-    def pac_pos(self) -> Point:
-        if not self.path:
-            return (1, 1)
-        idx = min(len(self.path) - 1, int(self.percent * (len(self.path) - 1) / 100))
-        return self.path[idx]
-
-    def tick_ghosts(self) -> None:
-        if not self.maze:
-            return
-        target = self.pac_pos()
-        for i, pos in enumerate(self.ghosts):
-            legal = self.maze.legal(pos)
-            if not legal:
-                continue
-            rng = random.Random(self.seed + i * 7919 + int(time.monotonic() * 5))
-            # Mostly chase Pac-Man, occasionally make a random turn.
-            if rng.random() < 0.72:
-                legal.sort(key=lambda p: abs(p[0] - target[0]) + abs(p[1] - target[1]))
-                best = legal[: min(2, len(legal))]
-                self.ghosts[i] = rng.choice(best)
-            else:
-                self.ghosts[i] = rng.choice(legal)
-
-
-class Pacsy:
-    def __init__(self, demo: bool = False) -> None:
-        self.demo = demo
-        self.packages: Dict[str, PackageState] = {}
-        self.order: List[str] = []
-        self.total_percent = 0
-        self.total_hint = ""
-        self.started = time.monotonic()
-        self.demo_start = self.started
-
-    def add_package(self, name: str) -> PackageState:
-        if name not in self.packages:
-            self.packages[name] = PackageState(name)
-            self.order.append(name)
-        return self.packages[name]
-
-    def parse(self, text: str) -> None:
-        clean = ANSI_RE.sub("", text)
-        self.total_hint = self.total_hint
-
-        # Pacman uses carriage returns for live download updates. Treat each
-        # rendered line independently instead of accumulating old frames.
-        for line in re.split(r"[\r\n]+", clean):
-            line = line.strip()
-            if not line:
-                continue
-            m = PROGRESS_RE.search(line)
-            if not m:
-                if ":: Retrieving packages" in line:
-                    self.total_hint = "Pakete werden empfangen ..."
-                elif ":: Processing package changes" in line:
-                    self.total_hint = "Paketänderungen werden verarbeitet ..."
-                elif "Synchronizing" in line:
-                    self.total_hint = "Paketdatenbanken werden synchronisiert ..."
-                elif "upgraded" in line.lower():
-                    self.total_hint = "Systemaktualisierung läuft ..."
-                continue
-
-            pct = max(0, min(100, int(m.group(1))))
-            prefix = line[:m.start()].strip()
-            candidates = PKG_RE.findall(prefix)
-            if candidates:
-                name = candidates[-1]
-            else:
-                tokens = prefix.split()
-                name = tokens[0] if tokens else "package"
-
-            state = self.add_package(name)
-            state.percent = pct
-            state.last_update = time.monotonic()
-            if pct >= 100 and not state.finished_at:
-                state.finished_at = time.monotonic()
-
-            sm = SPEED_RE.search(line)
-            if sm:
-                state.speed = sm.group(0)
-            tm = TIME_RE.search(line)
-            if tm:
-                state.eta = tm.group(1)
-            sizes = SIZE_RE.findall(line)
-            if sizes:
-                state.size = f"{sizes[-1][0]} {sizes[-1][1]}"
-
-            self.total_percent = max(self.total_percent, pct)
-
-    def demo_tick(self) -> None:
-        elapsed = time.monotonic() - self.demo_start
-        names = [
-            "firefox-157.0.1-1-x86_64",
-            "gtk4-4.24.1-1-x86_64",
-            "openssl-3.5.8-1-x86_64",
-            "glib2-2.86.1-1-x86_64",
-            "linux-cachyos-6.17-1-x86_64",
-            "cachyos-settings-1.0-1-x86_64",
-            "mesa-26.2.1-1-x86_64",
-            "gcc-15.2.1-1-x86_64",
-        ]
-        for i, name in enumerate(names):
-            state = self.add_package(name)
-            state.percent = int((elapsed * (7 + i * 1.4) + i * 16) % 101)
-            state.speed = f"{250 + i * 83} KiB/s"
-            state.eta = f"00:{max(1, 19 - int(state.percent / 6)):02d}"
-            state.size = f"{0.4 + i * 0.37:.1f} MiB"
-            state.last_update = time.monotonic()
-        self.total_percent = int((elapsed * 5) % 101)
-        self.total_hint = "Pakete werden empfangen ..."
-
-    def visible(self, limit: int) -> List[PackageState]:
-        return [self.packages[n] for n in self.order[-limit:]]
-
-    def render_lane(self, state: PackageState) -> List[str]:
-        assert state.maze is not None
-        state.tick_ghosts()
-        pac = state.pac_pos()
-        ghosts = {p: i for i, p in enumerate(state.ghosts)}
-
-        title = f"{CYAN}{state.name[:34]}{RESET}  {state.percent:3d}%"
-        out = [title]
-
-        for y, row in enumerate(state.maze.grid):
-            line = []
-            for x, cell in enumerate(row):
-                pos = (y, x)
-                if pos == pac:
-                    glyph = PAC if int(time.monotonic() * 8) % 2 else PAC_ALT
-                    line.append(f"{YELLOW}{glyph}{RESET}")
-                elif pos in ghosts:
-                    i = ghosts[pos]
-                    line.append(f"{state.ghost_colors[i]}{GHOSTS[i]}{RESET}")
-                elif pos in state.maze.power:
-                    line.append(f"{WHITE}◆{RESET}")
-                elif cell == ".":
-                    line.append(f"{YELLOW}·{RESET}")
-                else:
-                    line.append(f"{BLUE}█{RESET}")
-            out.append("".join(line))
-
-        if state.percent >= 100:
-            meta = f"{GREEN}{BOLD}★ LEVEL CLEAR ★{RESET}  {state.size or '--'}"
-        else:
-            meta = (
-                f"{DIM}{state.size or '--':>8}  "
-                f"{state.speed or '--':<11}  ETA {state.eta or '--:--'}{RESET}"
-            )
-        out.append(meta)
+    def neighbours(self,p:Point)->List[Point]:
+        y,x=p; out=[]
+        for q in ((y,x+1),(y+1,x),(y,x-1),(y-1,x)):
+            if self.floor(q): out.append(q)
         return out
 
-    @staticmethod
-    def header(cols: int) -> List[str]:
-        inner = max(52, min(cols - 2, 76))
-        top = "╭" + "─" * (inner - 2) + "╮"
-        middle = (
-            "│ "
-            + f"{YELLOW}◕{RESET} {BOLD}pacman Systemaktualisierung{RESET}"
-            + " " * max(1, inner - 36)
-            + f"{DIM}live PTY / Pac-Man mode{RESET} │"
-        )
-        bottom = "╰" + "─" * (inner - 2) + "╯"
-        return [
-            f"{CYAN}{BOLD}{top}{RESET}",
-            f"{CYAN}{BOLD}{middle}{RESET}",
-            f"{CYAN}{BOLD}{bottom}{RESET}",
-        ]
+    def _path(self,start:Point,goal:Point)->List[Point]:
+        q=deque([start]); parent={start:None}
+        while q:
+            p=q.popleft()
+            if p==goal: break
+            for n in self.neighbours(p):
+                if n not in parent:
+                    parent[n]=p; q.append(n)
+        if goal not in parent: return [start]
+        path=[]; cur=goal
+        while cur is not None:
+            path.append(cur); cur=parent[cur]
+        return list(reversed(path))
 
-    def render(self) -> str:
-        cols, rows = shutil.get_terminal_size((80, 40))
-        cols = max(60, cols)
-        rows = max(20, rows)
+@dataclass
+class Package:
+    repo:str
+    name:str
+    old:str=""
+    new:str=""
+    percent:int=0
+    speed:str=""
+    eta:str=""
+    size:str=""
+    seed:int=0
+    maze:Maze|None=None
+    ghosts:List[Point]=field(default_factory=list)
+    updated:float=0.0
+    finished:bool=False
 
-        lines = [
-            f"{CYAN}{BOLD}CACHYOS PACMA-SY{RESET}",
-            *self.header(cols),
-            "",
-            f"{CYAN}◆{RESET} {BOLD}Systemstatus{RESET}  "
-            f"{self.total_hint or 'Warte auf pacman ...'}",
-            f"{GREEN}◆{RESET} Gesamtfortschritt {self.total_percent:3d}% "
-            f"{self.progress_bar(self.total_percent, min(34, max(16, cols - 34)))}",
-            "",
-        ]
+    def __post_init__(self)->None:
+        self.seed=seed_for(f"{self.repo}/{self.name}")
+        self.maze=Maze(self.seed)
+        rng=random.Random(self.seed)
+        choices=self.maze.path[max(1,len(self.maze.path)//5):-2] or self.maze.path
+        self.ghosts=[rng.choice(choices) for _ in range(3)]
 
-        lane_height = 15
-        available = max(1, rows - len(lines) - 4)
-        limit = max(1, min(3, available // lane_height))
-        states = self.visible(limit)
+    def pac(self)->Point:
+        path=self.maze.path if self.maze else [(1,1)]
+        i=min(len(path)-1,int((self.percent/100)*max(0,len(path)-1)))
+        return path[i]
 
-        if states:
-            for index, state in enumerate(states):
-                lines.extend(self.render_lane(state))
-                if index != len(states) - 1:
-                    lines.append("")
+    def tick(self)->None:
+        if not self.maze: return
+        target=self.pac()
+        for i,pos in enumerate(self.ghosts):
+            choices=self.maze.neighbours(pos)
+            if not choices: continue
+            rng=random.Random(self.seed+i*1009+int(time.monotonic()*6))
+            if rng.random()<0.78:
+                choices.sort(key=lambda p:abs(p[0]-target[0])+abs(p[1]-target[1]))
+                self.ghosts[i]=rng.choice(choices[:min(2,len(choices))])
+            else:
+                self.ghosts[i]=rng.choice(choices)
+
+@dataclass
+class RepoLane:
+    repo:str
+    current:str=""
+    percent:int=0
+    speed:str=""
+    eta:str=""
+    packages:int=0
+
+class Pacsy:
+    def __init__(self,demo:bool=False)->None:
+        self.demo=demo
+        self.packages:Dict[str,Package]={}
+        self.order:List[str]=[]
+        self.lanes={r:RepoLane(r) for r in REPOS}
+        self.total_percent=0
+        self.total_count=0
+        self.total_size=""
+        self.total_installed=""
+        self.total_net=""
+        self.status="Warte auf pacman ..."
+        self.prompt=""
+        self.demo_start=time.monotonic()
+
+    def add_pkg(self,repo:str,name:str,old:str="",new:str="")->Package:
+        key=f"{repo}/{name}"
+        if key not in self.packages:
+            self.packages[key]=Package(repo,name,old,new)
+            self.order.append(key)
+            self.lanes.setdefault(repo,RepoLane(repo)).packages+=1
+        p=self.packages[key]
+        if old: p.old=old
+        if new: p.new=new
+        return p
+
+    def parse(self,text:str)->None:
+        clean=strip_ansi(text)
+        for raw in re.split(r"[\r\n]+",clean):
+            line=raw.strip()
+            if not line: continue
+            low=line.lower()
+            if ":: retrieving packages" in low:
+                self.status="Pakete werden empfangen ..."
+            elif ":: processing package changes" in low:
+                self.status="Paketänderungen werden verarbeitet ..."
+            elif ":: resolving dependencies" in low:
+                self.status="Abhängigkeiten werden aufgelöst ..."
+            elif ":: looking for conflicting packages" in low:
+                self.status="Nach in Konflikt stehenden Paketen wird gesucht ..."
+            elif ":: starting full system upgrade" in low:
+                self.status="Vollständige Systemaktualisierung wird gestartet ..."
+
+            m=PKG_LINE_RE.match(line)
+            if m:
+                self.add_pkg(m.group("repo"),m.group("name"),m.group("old"),m.group("new"))
+                self.prompt="Installation fortsetzen? [J/n]"
+                continue
+
+            pct=PCT_RE.search(line)
+            if not pct: continue
+            value=max(0,min(100,int(pct.group(1))))
+            before=line[:pct.start()].strip()
+            dm=DOWNLOAD_RE.search(before)
+            key=None
+            if dm:
+                filename=re.sub(r"\.pkg\.tar\.[a-z0-9]+$","",dm.group("name"))
+                parts=filename.rsplit("-",2)
+                name=parts[0] if len(parts)>=3 else filename
+                key=next((k for k in reversed(self.order) if k.endswith("/"+name) or k.endswith("/"+filename)),None)
+            if key is None and self.order:
+                key=self.order[-1]
+            if key is None: continue
+            p=self.packages[key]
+            p.percent=value; p.updated=time.monotonic(); p.finished=value>=100
+            sm=SPEED_RE.search(line); tm=TIME_RE.search(line)
+            if sm: p.speed=sm.group(0)
+            if tm: p.eta=tm.group(1)
+            lane=self.lanes.setdefault(p.repo,RepoLane(p.repo))
+            lane.current=p.name; lane.percent=value; lane.speed=p.speed; lane.eta=p.eta
+            self.total_percent=max(self.total_percent,value)
+
+    def demo_tick(self)->None:
+        names=[
+            ("extra","firefox","157.0.1-1","157.0.1-1"),("cachyos","opencode","0.1.2-1","0.2.0-1"),
+            ("core","gtk4","4.24.5-1","4.24.6-1"),("extra","gtk3","3.24.50-1","3.24.51-1"),
+            ("extra","glib2","2.86.1-1","2.86.2-1"),("cachyos","libqalculate","5.13.0-1","5.13.1-1"),
+            ("extra","mesa","26.2.2-1","26.2.3-1"),("multilib","lib32-expat","2.8.5-1","2.9.0-1"),
+            ("extra","openssl","10.5p1-1","10.6p1-1"),("extra","gst-plugins-base","1.28.7-2","1.28.7-3")]
+        t=time.monotonic()-self.demo_start
+        for i,(repo,name,old,new) in enumerate(names):
+            p=self.add_pkg(repo,name,old,new)
+            p.percent=int((t*(5.5+i*.65)+i*11)%101)
+            p.speed=f"{275+i*71} KiB/s"; p.eta=f"00:{max(1,12-int(p.percent/9)):02d}"
+            p.size=f"{0.2+i*0.19:.2f} MiB"; p.updated=time.monotonic(); p.finished=p.percent>=100
+            l=self.lanes[repo]; l.current=p.name; l.percent=max(l.percent,p.percent); l.speed=p.speed; l.eta=p.eta
+        self.total_percent=int((t*4.7)%101)
+        self.total_count=43; self.total_size="214,85 MiB"; self.total_installed="798,73 MiB"; self.total_net="-1,08 MiB"
+        self.status="Pakete werden empfangen ..."; self.prompt="Installation fortsetzen? [J/n]"
+
+    def lane(self,lane:RepoLane,width:int)->str:
+        colors={"core":BLUE,"extra":YELLOW,"multilib":RED,"cachyos":CYAN}
+        c=colors.get(lane.repo,CYAN)
+        name=(lane.current or "Warte ...")[:18]; pct=lane.percent
+        barw=max(12,min(25,width-34)); filled=int(barw*pct/100)
+        dots="·"*filled+" "*max(0,barw-filled)
+        return f"{c}{lane.repo:<9}{RESET} {name:<18} {lane.speed or '--':>10} {lane.eta or '--:--':>5} {c}┌{dots}┐{RESET} {pct:3d}%"
+
+    def package_table(self,rows:int,width:int)->List[str]:
+        title=f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*5)%2]}{RESET}  {CYAN}{BOLD}Pakete ({len(self.packages)}){RESET}"
+        selected=[self.packages[k] for k in self.order[-min(rows,8):]]
+        if width<100:
+            out=[title]
+            for p in selected:
+                status="↑" if p.old!=p.new else "="
+                out.append(f"{status} {p.repo}/{p.name[:24]:<24} {p.old[:11]:>11} → {p.new[:11]:<11} {p.size or '--':>9}")
+            return out
+        out=[title,f"{DIM}{'Paket':<34} {'Alte Version':<16} {'Neue Version':<16} {'Netto':>10} {'Download':>12}{RESET}"]
+        for p in selected:
+            net="0,00 MiB" if p.old==p.new else (p.size or "--")
+            out.append(f"{WHITE}{p.repo+'/'+p.name:<34}{RESET} {p.old:<16} {GREEN}{'↑ '+p.new:<16}{RESET} {YELLOW}{net:>10}{RESET} {p.size or '--':>12}")
+        return out
+
+    def one_line_game(self,p:Package,width:int)->str:
+        length=max(12,min(34,width)); filled=int(length*p.percent/100)
+        if p.percent>=100:
+            return f"{GREEN}┌"+"─"*length+f"┐{RESET} {GREEN}★ 100%{RESET}"
+        ghost_pos=max(0,min(length-1,int(((p.percent+32)%100)/100*length)))
+        chars=[]
+        for i in range(length):
+            if i==filled: chars.append(f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET}")
+            elif i==ghost_pos: chars.append(f"{RED}A{RESET}")
+            elif i<filled: chars.append(f"{YELLOW}·{RESET}")
+            else: chars.append(f"{GRAY}·{RESET}")
+        return f"{CYAN}┌"+"".join(chars)+f"┐{RESET}"
+
+    def master_bar(self,width:int)->str:
+        if self.total_percent>=100: return f"{GREEN}"+"━"*width+f"{RESET} {GREEN}★{RESET}"
+        n=int(width*self.total_percent/100)
+        return f"{GREEN}"+"━"*n+f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET}{GRAY}"+"─"*max(0,width-n-1)+f"{RESET}"
+
+    def render(self)->str:
+        cols,rows=shutil.get_terminal_size((120,45)); cols=max(70,cols); rows=max(22,rows)
+        full=cols>=105; lines=[]
+        lines.append(f"{CYAN}{BOLD}╭─◈ CACHYOS PACMA-SY ────────────────────────────────────────────────────────────╮{RESET}")
+        lines.append(f"{CYAN}│{RESET} {YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET} {BOLD}pacman Systemaktualisierung{RESET} {DIM}live PTY renderer / Pac-Man mode{RESET}{CYAN}│{RESET}")
+        lines.append(f"{CYAN}╰────────────────────────────────────────────────────────────────────────────────╯{RESET}")
+        lines.append("")
+        lines.append(f"{CYAN}◆{RESET} {BOLD}Systemstatus{RESET}  {self.status}")
+        lines.append(f"{GREEN}◆{RESET} Gesamtfortschritt {self.total_percent:3d}% {self.master_bar(32)}")
+        lines.append("")
+        lines.append(f"{CYAN}┌─{BOLD} Repository / Download-Fortschritt {RESET}{CYAN}"+"─"*max(2,min(cols-40,42))+"┐"+RESET)
+        for repo in REPOS: lines.append("  "+self.lane(self.lanes[repo],cols))
+        lines.append(f"{CYAN}└"+"─"*max(2,min(cols-1,76))+"┘"+RESET)
+        lines.append("")
+        table_rows=8 if full else 4
+        table=self.package_table(table_rows,cols)
+        lines.append(f"{CYAN}╭─{RESET}"+"─"*max(2,min(cols-4,80))+f"{CYAN}╮{RESET}")
+        lines.extend(table)
+        lines.append(f"{CYAN}╰─"+"─"*max(2,min(cols-4,80))+f"╯{RESET}")
+        lines.append("")
+        lines.append(f"{CYAN}╭─ {YELLOW}{PAC_FRAMES[int(time.monotonic()*5)%2]}{RESET} {BOLD}{self.prompt or 'Downloadfortschritt'}{RESET}"+"─"*max(2,min(cols-48,35))+f"╮{RESET}")
+        visible=[self.packages[k] for k in self.order[-(6 if full else 3):]]
+        if not visible:
+            lines.append(f"  {DIM}Pac-Man wartet auf das erste Paket ...{RESET}")
         else:
-            lines.extend([
-                f"{DIM}Noch keine Downloaddaten.{RESET}",
-                f"{YELLOW}◕{RESET}  · · · · · · · · · · · · · · · · ·  "
-                f"{GRAY}Pac-Man wartet auf das erste Paket ...{RESET}",
-            ])
-
-        lines.extend([
-            "",
-            f"{BLUE}◆{RESET} {BOLD}Pakete:{RESET} {len(self.packages):02d}   "
-            f"{CYAN}Pac-Man:{RESET} Downloadfortschritt = Level-Fortschritt",
-            f"{DIM}Ctrl+C beendet die Ansicht; Eingaben gehen direkt an pacman.{RESET}",
-        ])
+            for p in visible:
+                name=f"{p.name[:26]:<26}"; stats=f"{p.speed or '--':>10} {p.eta or '--:--':>5} {p.percent:3d}%"
+                lines.append(f"{CYAN}{name}{RESET} {stats}  {self.one_line_game(p,max(20,cols-48))}")
+        lines.append(f"{CYAN}╰─"+"─"*max(2,min(cols-4,95))+f"╯{RESET}")
+        lines.append("")
+        lines.append(f"{CYAN}◆{RESET} {BOLD}Gesamt{RESET}  ({len(self.packages)}/{self.total_count or len(self.packages)})   {self.total_size or '--'}   {self.total_percent:3d}%")
+        lines.append(f"{DIM}Ctrl+C beendet die Ansicht; Eingaben werden unverändert an pacman weitergereicht.{RESET}")
         return "\n".join(lines)
 
-    @staticmethod
-    def progress_bar(pct: int, width: int) -> str:
-        width = max(10, width)
-        filled = int(width * pct / 100)
-        if pct >= 100:
-            return f"{GREEN}{'█' * width}{RESET}"
-        return (
-            f"{GREEN}{'█' * filled}{RESET}"
-            f"{YELLOW}{PAC}{RESET}"
-            f"{GRAY}{'·' * max(0, width - filled - 1)}{RESET}"
-        )
+    def screen(self)->None:
+        sys.stdout.write("\033[2J\033[H\033[?25l"+self.render()+"\033[0m"); sys.stdout.flush()
 
-    def screen(self) -> None:
-        # Clear and redraw the complete frame. Do not slice strings containing
-        # ANSI escapes: doing so was the cause of the broken terminal layout.
-        sys.stdout.write("\033[2J\033[H\033[?25l")
-        sys.stdout.write(self.render())
-        sys.stdout.write("\033[0m")
-        sys.stdout.flush()
-
-    def run_demo(self) -> None:
+    def run_demo(self)->int:
         try:
             while True:
-                self.demo_tick()
-                self.screen()
-                time.sleep(0.14)
+                self.demo_tick(); self.screen(); time.sleep(.12)
         except KeyboardInterrupt:
-            pass
-        finally:
-            sys.stdout.write("\033[0m\033[?25h\n")
-            sys.stdout.flush()
-
-    def run_live(self) -> int:
-        if not shutil.which("pacman"):
-            print("pacsy: pacman wurde nicht gefunden.", file=sys.stderr)
-            return 127
-        if not shutil.which("sudo"):
-            print("pacsy: sudo wurde nicht gefunden.", file=sys.stderr)
-            return 127
-        if not sys.stdin.isatty() or not sys.stdout.isatty():
-            print("pacsy: Live-Modus benötigt ein interaktives TTY.", file=sys.stderr)
-            return 2
-
-        pid, fd = os.forkpty()
-        if pid == 0:
-            os.execvp("sudo", ["sudo", "pacman", "-Syu"])
-
-        old = termios.tcgetattr(sys.stdin)
-        tty.setraw(sys.stdin.fileno())
-
-        try:
-            while True:
-                r, _, _ = select.select([fd, sys.stdin], [], [], 0.08)
-
-                if fd in r:
-                    try:
-                        data = os.read(fd, 65536)
-                    except OSError:
-                        data = b""
-                    if not data:
-                        break
-                    self.parse(data.decode("utf-8", errors="replace"))
-
-                if sys.stdin in r:
-                    data = os.read(sys.stdin.fileno(), 4096)
-                    if data:
-                        os.write(fd, data)
-
-                self.screen()
-
-                try:
-                    waited, status = os.waitpid(pid, os.WNOHANG)
-                    if waited == pid:
-                        return os.waitstatus_to_exitcode(status)
-                except ChildProcessError:
-                    return 0
-
-        except KeyboardInterrupt:
-            try:
-                os.kill(pid, signal.SIGINT)
-            except ProcessLookupError:
-                pass
             return 130
         finally:
-            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            sys.stdout.write("\033[0m\033[?25h\n")
-            sys.stdout.flush()
+            sys.stdout.write("\033[0m\033[?25h\n"); sys.stdout.flush()
 
+    def run_live(self)->int:
+        if not shutil.which("pacman") or not shutil.which("sudo"):
+            print("pacsy: pacman und sudo werden benötigt.",file=sys.stderr); return 127
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            print("pacsy: Live-Modus benötigt ein interaktives TTY.",file=sys.stderr); return 2
+        pid,fd=os.forkpty()
+        if pid==0: os.execvp("sudo",["sudo","pacman","-Syu"])
+        old=termios.tcgetattr(sys.stdin); tty.setraw(sys.stdin.fileno())
+        try:
+            while True:
+                readable,_,_=select.select([fd,sys.stdin],[],[],.08)
+                if fd in readable:
+                    try: data=os.read(fd,65536)
+                    except OSError: data=b""
+                    if not data: break
+                    self.parse(data.decode("utf-8",errors="replace"))
+                if sys.stdin in readable:
+                    data=os.read(sys.stdin.fileno(),4096)
+                    if data: os.write(fd,data)
+                self.screen()
+                try:
+                    waited,status=os.waitpid(pid,os.WNOHANG)
+                    if waited==pid: return os.waitstatus_to_exitcode(status)
+                except ChildProcessError: return 0
+        except KeyboardInterrupt:
+            try: os.kill(pid,signal.SIGINT)
+            except ProcessLookupError: pass
+            return 130
+        finally:
+            termios.tcsetattr(sys.stdin,termios.TCSADRAIN,old)
+            try: os.close(fd)
+            except OSError: pass
+            sys.stdout.write("\033[0m\033[?25h\n"); sys.stdout.flush()
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="CachyOS Pac-Man themed pacman wrapper"
-    )
-    parser.add_argument(
-        "--demo",
-        action="store_true",
-        help="show animated demo without running pacman",
-    )
-    args = parser.parse_args()
+def main()->int:
+    parser=argparse.ArgumentParser(description="CachyOS Pac-Man themed pacman wrapper")
+    parser.add_argument("--demo",action="store_true"); args=parser.parse_args()
+    app=Pacsy(args.demo); return app.run_demo() if args.demo else app.run_live()
 
-    app = Pacsy(demo=args.demo)
-    return app.run_demo() if args.demo else app.run_live()
-
-
-if __name__ == "__main__":
+if __name__=="__main__":
     raise SystemExit(main())
