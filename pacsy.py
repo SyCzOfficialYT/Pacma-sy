@@ -337,8 +337,11 @@ class Pacsy:
 
     def render(self)->str:
         cols, rows = shutil.get_terminal_size((80,40))
-        compact = cols < 105
-        width = max(40, cols - 4 if compact else cols - 2)
+        # Termux/Android can report a logical width larger than the drawable area.
+        # Always use the stacked phone layout there so the reference UI never wraps.
+        is_android = bool(os.environ.get("TERMUX_VERSION") or os.environ.get("ANDROID_ROOT"))
+        compact = is_android or cols < 105
+        width = max(40, min(cols - 2, 84) if compact else cols - 2)
         inner = width - 2
         now = time.monotonic()
         lines = []
