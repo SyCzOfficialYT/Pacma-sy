@@ -287,38 +287,111 @@ class Pacsy:
         n=int(width*self.total_percent/100)
         return f"{GREEN}"+"━"*n+f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET}{GRAY}"+"─"*max(0,width-n-1)+f"{RESET}"
 
+    def _box(self, title:str, body:List[str], width:int, accent:str=CYAN)->List[str]:
+        width=max(24,width)
+        clean_title=title[:width-6]
+        top=f"╭─ {clean_title} "+"─"*max(1,width-len(clean_title)-4)+"╮"
+        bottom="╰"+"─"*(width-2)+"╯"
+        out=[f"{accent}{top[:width]}{RESET}"]
+        for raw in body:
+            # ANSI-aware enough for this renderer: content itself is kept short
+            # so Android/Termux never receives an overlong physical line.
+            out.append(raw[:width])
+        out.append(f"{accent}{bottom}{RESET}")
+        return out
+
     def render(self)->str:
-        cols,rows=shutil.get_terminal_size((120,45)); cols=max(70,cols); rows=max(22,rows)
-        full=cols>=105; lines=[]
-        lines.append(f"{CYAN}{BOLD}╭─◈ CACHYOS PACMA-SY ────────────────────────────────────────────────────────────╮{RESET}")
-        lines.append(f"{CYAN}│{RESET} {YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET} {BOLD}pacman Systemaktualisierung{RESET} {DIM}live PTY renderer / Pac-Man mode{RESET}{CYAN}│{RESET}")
-        lines.append(f"{CYAN}╰────────────────────────────────────────────────────────────────────────────────╯{RESET}")
-        lines.append("")
-        lines.append(f"{CYAN}◆{RESET} {BOLD}Systemstatus{RESET}  {self.status}")
-        lines.append(f"{GREEN}◆{RESET} Gesamtfortschritt {self.total_percent:3d}% {self.master_bar(32)}")
-        lines.append("")
-        lines.append(f"{CYAN}┌─{BOLD} Repository / Download-Fortschritt {RESET}{CYAN}"+"─"*max(2,min(cols-40,42))+"┐"+RESET)
-        for repo in REPOS: lines.append("  "+self.lane(self.lanes[repo],cols))
-        lines.append(f"{CYAN}└"+"─"*max(2,min(cols-1,76))+"┘"+RESET)
-        lines.append("")
-        table_rows=8 if full else 4
-        table=self.package_table(table_rows,cols)
-        lines.append(f"{CYAN}╭─{RESET}"+"─"*max(2,min(cols-4,80))+f"{CYAN}╮{RESET}")
-        lines.extend(table)
-        lines.append(f"{CYAN}╰─"+"─"*max(2,min(cols-4,80))+f"╯{RESET}")
-        lines.append("")
-        lines.append(f"{CYAN}╭─ {YELLOW}{PAC_FRAMES[int(time.monotonic()*5)%2]}{RESET} {BOLD}{self.prompt or 'Downloadfortschritt'}{RESET}"+"─"*max(2,min(cols-48,35))+f"╮{RESET}")
-        visible=[self.packages[k] for k in self.order[-(6 if full else 3):]]
-        if not visible:
-            lines.append(f"  {DIM}Pac-Man wartet auf das erste Paket ...{RESET}")
+        cols,rows=shutil.get_terminal_size((80,40))
+        # Never force a 70-column minimum. The physical terminal width is the
+        # source of truth; overlong ANSI lines were causing the broken wrapping
+        # visible on Android/Termux.
+        cols=max(48,cols)
+        compact=cols<96
+        inner=cols-2
+        lines=[]
+
+        header_title="CACHYOS PACMA-SY"
+        header_sub="pacman Systemaktualisierung"
+        mode="live PTY / Pac-Man"
+        if compact:
+            lines.append(f"{CYAN}╭─◈ {header_title} "+"─"*max(1,inner-5-len(header_title))+"╮{RESET}")
+            lines.append(f"{CYAN}│{RESET} {YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET} {BOLD}{header_sub}{RESET}")
+            lines.append(f"{CYAN}╰"+"─"*(inner-2)+"╯{RESET}")
         else:
-            for p in visible:
-                name=f"{p.name[:26]:<26}"; stats=f"{p.speed or '--':>10} {p.eta or '--:--':>5} {p.percent:3d}%"
-                lines.append(f"{CYAN}{name}{RESET} {stats}  {self.one_line_game(p,max(20,cols-48))}")
-        lines.append(f"{CYAN}╰─"+"─"*max(2,min(cols-4,95))+f"╯{RESET}")
+            lines.append(f"{CYAN}{BOLD}╭─◈ {header_title} "+"─"*max(1,inner-6-len(header_title))+"╮{RESET}")
+            lines.append(f"{CYAN}│{RESET} {YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET} {BOLD}{header_sub}{RESET} {DIM}{mode}{RESET}")
+            lines.append(f"{CYAN}╰"+"─"*(inner-2)+"╯{RESET}")
+
         lines.append("")
-        lines.append(f"{CYAN}◆{RESET} {BOLD}Gesamt{RESET}  ({len(self.packages)}/{self.total_count or len(self.packages)})   Download {self.total_size or '--'}   Installiert {self.total_installed or '--'}   Netto {self.total_net or '--'}   {self.total_percent:3d}%")
-        lines.append(f"{DIM}Ctrl+C beendet die Ansicht; Eingaben werden unverändert an pacman weitergereicht.{RESET}")
+        status=self.status[:max(18,cols-20)]
+        lines.append(f"{CYAN}◆{RESET} {BOLD}Systemstatus{RESET}  {status}")
+        lines.append(f"{GREEN}◆{RESET} Gesamtfortschritt {self.total_percent:3d}% {self.master_bar(min(32,max(10,cols-38)))}")
+        lines.append("")
+
+        repo_body=[]
+        for repo in REPOS:
+            lane=self.lanes[repo]
+            if compact:
+                c={"core":BLUE,"extra":YELLOW,"multilib":RED,"cachyos":CYAN}.get(repo,CYAN)
+                barw=max(10,min(24,cols-45))
+                filled=int(barw*lane.percent/100)
+                bar="·"*filled+"·"*max(0,barw-filled)
+                repo_body.append(
+                    f"{c}{repo:<8}{RESET} {lane.current[:14]:<14} "
+                    f"{lane.percent:3d}% {c}│{bar}│{RESET}"
+                )
+            else:
+                repo_body.append("  "+self.lane(lane,cols))
+        lines += self._box("Repository / Download-Fortschritt",repo_body,cols)
+
+        lines.append("")
+        table_width=cols
+        if compact:
+            table_body=self.package_table(min(5,max(2,rows//12)),cols)
+        else:
+            table_body=self.package_table(8,cols)
+        # package_table itself switches to compact columns below 100 columns.
+        lines += self._box(f"{PAC_FRAMES[int(time.monotonic()*5)%2]}  Pakete ({len(self.packages)})",table_body,table_width)
+
+        lines.append("")
+        game_body=[]
+        visible=[self.packages[k] for k in self.order[-(6 if not compact else 4):]]
+        if not visible:
+            game_body=[f"{DIM}Pac-Man wartet auf das erste Paket ...{RESET}"]
+        elif compact:
+            barw=max(14,min(28,cols-43))
+            for p in visible:
+                stats=f"{p.percent:3d}%"
+                game_body.append(
+                    f"{CYAN}{p.name[:12]:<12}{RESET} {stats} "
+                    f"{self.one_line_game(p,barw)}"
+                )
+        else:
+            barw=max(20,cols-48)
+            for p in visible:
+                stats=f"{p.speed or '--':>10} {p.eta or '--:--':>5} {p.percent:3d}%"
+                game_body.append(
+                    f"{CYAN}{p.name[:26]:<26}{RESET} {stats}  {self.one_line_game(p,barw)}"
+                )
+        lines += self._box(
+            f"{PAC_FRAMES[int(time.monotonic()*5)%2]}  {self.prompt or 'Downloadfortschritt'}",
+            game_body, cols
+        )
+
+        lines.append("")
+        total=f"◆ Gesamt ({len(self.packages)}/{self.total_count or len(self.packages)})"
+        if compact:
+            lines.append(
+                f"{CYAN}{total}{RESET}  DL {self.total_size or '--'}  "
+                f"INST {self.total_installed or '--'}  {self.total_percent:3d}%"
+            )
+        else:
+            lines.append(
+                f"{CYAN}{total}{RESET}  Download {self.total_size or '--'}  "
+                f"Installiert {self.total_installed or '--'}  Netto {self.total_net or '--'}  "
+                f"{self.total_percent:3d}%"
+            )
+        lines.append(f"{DIM}Ctrl+C beendet die Ansicht; Eingaben gehen direkt an pacman.{RESET}")
         return "\n".join(lines)
 
     def screen(self)->None:
