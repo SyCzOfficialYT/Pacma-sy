@@ -349,96 +349,110 @@ class Pacsy:
         # Mobile/Termux: stack the reference layout. Nothing is allowed to
         # become a horizontal multi-line row.
         if compact:
-            # Phone/Termux reference layout. Keep every row inside the real
-            # drawable width; never compose a desktop row and let the shell wrap it.
+            # Dedicated phone renderer. Every emitted row is deliberately
+            # bounded to the real terminal width; Termux auto-wraps otherwise.
             mode = "DEMO" if self.demo else "LIVE"
-            w = max(42, min(width, 78))
+            w = max(40, cols - 1)
+            w = min(w, 82)
             inner = w - 2
             colors = {"core":BLUE, "extra":YELLOW, "multilib":RED, "cachyos":CYAN}
 
-            def box_top(title, accent=CYAN):
-                t = strip_ansi(title)
-                return f"{accent}╭─ {t} " + "─"*max(1, w-len(t)-5) + f"╮{RESET}"
-
-            def box_bottom(accent=CYAN):
-                return f"{accent}╰" + "─"*(w-2) + f"╯{RESET}"
-
             def clip(s, n):
-                return strip_ansi(s)[:max(1,n)]
+                return strip_ansi(s)[:max(1, n)]
 
-            lines.append(f"{CYAN}╭─{RESET} {BOLD}{CYAN}CACHYOS{RESET} {BOLD}PACMA-SY{RESET} "
-                         f"{DIM}{mode} • pacman -Syu{RESET}" +
-                         " " * max(1,w-32) + f"{CYAN}╮{RESET}")
-            lines.append(f"{CYAN}│{RESET} {YELLOW}{PAC_FRAMES[int(now*9)%2]}{RESET} "
-                         f"{BOLD}pacman Systemaktualisierung{RESET}")
-            lines.append(f"{CYAN}│{RESET} {DIM}{clip(self.status,inner-2)}{RESET}")
-            lines.append(box_bottom())
+            def top(title, accent=CYAN):
+                t = clip(title, max(8, w - 8))
+                return f"{accent}╭─ {t} " + "─" * max(1, w - len(t) - 5) + f"╮{RESET}"
 
-            # Overall progress — deliberately compact like the reference footer.
-            bw=max(12,min(28,inner-25))
-            fill=int(bw*self.total_percent/100)
-            progress=GREEN+"━"*fill+RESET+YELLOW+PAC_FRAMES[int(now*9)%2]+RESET+GRAY+"─"*max(0,bw-fill-1)+RESET
+            def bottom(accent=CYAN):
+                return f"{accent}╰" + "─" * (w - 2) + f"╯{RESET}"
+
+            def row(text="", accent=CYAN):
+                # One hard invariant: visible width <= w.
+                text = clip(text, inner)
+                return f"{accent}│{RESET} {text:<{inner-1}}{accent}│{RESET}"
+
+            lines.append(top(f"CACHYOS  PACMA-SY  {mode} • pacman -Syu"))
+            lines.append(row(f"{YELLOW}{PAC_FRAMES[int(now*9)%2]}{RESET} "
+                             f"{BOLD}pacman Systemaktualisierung{RESET}"))
+            lines.append(row(f"{DIM}{clip(self.status, inner-2)}{RESET}"))
+            lines.append(bottom())
             lines.append("")
-            lines.append(f"{CYAN}◆{RESET} {BOLD}Gesamtfortschritt{RESET} "
-                         f"{self.total_percent:3d}% {progress}")
 
-            # Repository block: one compact status row + one actual Pac-Man strip
-            # per repository. This is the same visual language as the reference.
+            # Progress bar is sized from the remaining cells, never guessed.
+            label = "◆ Gesamtfortschritt"
+            suffix = f" {self.total_percent:3d}% "
+            barw = max(8, inner - len(label) - len(suffix) - 2)
+            barw = min(barw, 24)
+            fill = int(barw * self.total_percent / 100)
+            bar = (GREEN + "━" * fill + RESET +
+                   YELLOW + PAC_FRAMES[int(now*9)%2] + RESET +
+                   GRAY + "─" * max(0, barw-fill-1) + RESET)
+            lines.append(f"{CYAN}│{RESET} {BOLD}{label}{RESET}{suffix}{bar}")
             lines.append("")
-            lines.append(box_top("Repository / Download-Fortschritt"))
+
+            # Repositories: status + a real Pac-Man lane. The lane is calculated
+            # from the exact remaining width, so it can never wrap on a phone.
+            lines.append(top("Repository / Download-Fortschritt"))
+            trackw = max(18, w - 5)
             for repo in REPOS:
-                lane=self.lanes[repo]; rc=colors[repo]
-                name=clip(lane.current or "Warte ...", 18)
-                meta=f"{lane.speed or '--':>8} {lane.eta or '--:--':>5} {lane.percent:3d}%"
-                lines.append(f"{rc}│{RESET} {rc}{repo:<8}{RESET} {name:<18} {meta}")
-                gamew=max(18,inner-4)
-                game=self.lane_game(seed_for(repo),lane.percent,gamew,(rc,GRAY,rc))[1]
-                lines.append(f"{rc}│{RESET}  {game}")
-            lines.append(box_bottom())
+                lane = self.lanes[repo]
+                rc = colors[repo]
+                name = clip(lane.current or "Warte ...", max(8, inner - 35))
+                meta = f"{lane.speed or '--':>8} {lane.eta or '--:--':>5} {lane.percent:3d}%"
+                status = clip(f"{repo:<8} {name:<{max(8, inner-35)}} {meta}", inner-1)
+                lines.append(row(f"{rc}{status}{RESET}", rc))
+                game = self.lane_game(seed_for(repo), lane.percent, trackw,
+                                      (rc, GRAY, rc))[1]
+                lines.append(row(" " + game, rc))
+            lines.append(bottom())
 
-            # Package table. On a phone, preserve the reference columns but
-            # shorten their content instead of letting them wrap.
-            count=self.total_count or len(self.packages)
+            # Package list: fixed reference columns, but compact enough for a phone.
+            count = self.total_count or len(self.packages)
             lines.append("")
-            lines.append(box_top(f"◕  Pakete ({count})",YELLOW))
+            lines.append(top(f"◕  Pakete ({count})", YELLOW))
             if not self.order:
-                lines.append(f"{YELLOW}│{RESET} {DIM}Keine Updates — pacman hat keine Pakete geliefert.{RESET}")
+                lines.append(row(f"{DIM}Noch keine Pakete von pacman empfangen.{RESET}", YELLOW))
             else:
-                lines.append(f"{YELLOW}│{RESET} {DIM}{'Paket':<24} {'ALT':<10} {'NEU':<10} {'DL':>8}{RESET}")
+                lines.append(row(f"{DIM}{'Paket':<22} {'ALT':<10} {'NEU':<10} {'DL':>8}{RESET}", YELLOW))
                 for key in self.order[-5:]:
-                    p=self.packages[key]
-                    label=clip(p.repo+"/"+p.name,24)
-                    old=clip(p.old,10); new=clip(p.new,10)
-                    lines.append(f"{YELLOW}│{RESET} {label:<24} {old:<10} "
-                                 f"{GREEN}{new:<10}{RESET} {p.size or '--':>8}")
-            lines.append(box_bottom(YELLOW))
+                    p = self.packages[key]
+                    label = clip(p.repo + "/" + p.name, 22)
+                    old = clip(p.old or "--", 10)
+                    new = clip(p.new or "--", 10)
+                    dl = clip(p.size or "--", 8)
+                    body = f"{label:<22} {old:<10} {GREEN}{new:<10}{RESET} {dl:>8}"
+                    lines.append(row(body, YELLOW))
+            lines.append(bottom(YELLOW))
 
-            # Download block — each package gets its own game lane.
+            # Download lanes: each package owns one Pac-Man strip.
             lines.append("")
-            lines.append(box_top("◕  Downloadfortschritt"))
-            visible=[self.packages[k] for k in self.order[-4:]]
+            lines.append(top("◕  Downloadfortschritt"))
+            visible = [self.packages[k] for k in self.order[-4:]]
             if not visible:
-                lines.append(f"{CYAN}│{RESET} {DIM}Pac-Man wartet auf das erste Paket ...{RESET}")
+                lines.append(row(f"{DIM}Pac-Man wartet auf das erste Paket ...{RESET}"))
             else:
                 for p in visible:
-                    palette=((YELLOW,GRAY,YELLOW) if p.seed%4==1 else
-                             (RED,GRAY,RED) if p.seed%4==2 else
-                             (MAGENTA,GRAY,MAGENTA) if p.seed%4==3 else
-                             (CYAN,GRAY,CYAN))
-                    lines.append(f"{CYAN}│{RESET} {clip(p.name,22):<22} "
-                                 f"{p.percent:3d}% {p.speed or '--':>8} {p.eta or '--:--':>5}")
-                    lines.append(f"{CYAN}│{RESET}  {self.one_line_game(p,max(18,inner-4),palette)}")
-            lines.append(box_bottom())
+                    palette = ((YELLOW,GRAY,YELLOW) if p.seed%4 == 1 else
+                               (RED,GRAY,RED) if p.seed%4 == 2 else
+                               (MAGENTA,GRAY,MAGENTA) if p.seed%4 == 3 else
+                               (CYAN,GRAY,CYAN))
+                    label = clip(p.name, max(8, inner-31))
+                    meta = f"{p.percent:3d}% {p.speed or '--':>8} {p.eta or '--:--':>5}"
+                    lines.append(row(f"{label:<{max(8, inner-31)}} {meta}"))
+                    game = self.one_line_game(p, trackw, palette)
+                    lines.append(row(" " + game))
+            lines.append(bottom())
 
             lines.append("")
-            lines.append(f"{CYAN}◆{RESET} {BOLD}Gesamt{RESET} "
-                         f"({len(self.packages)}/{count})  "
-                         f"Download {self.total_size or '--'}  "
-                         f"Installiert {self.total_installed or '--'}  "
-                         f"Netto {self.total_net or '--'}  "
-                         f"{self.total_percent}%")
+            summary = (f"◆ Gesamt ({len(self.packages)}/{count})  "
+                       f"DL {self.total_size or '--'}  "
+                       f"Inst {self.total_installed or '--'}  "
+                       f"Netto {self.total_net or '--'}  "
+                       f"{self.total_percent}%")
+            lines.append(clip(summary, w))
             if self.last_pacman:
-                lines.append(DIM+clip(self.last_pacman,inner)+RESET)
+                lines.append(clip(self.last_pacman, w))
             return "\n".join(lines)
 
         # Desktop: keep the reference's dense composition.
