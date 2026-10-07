@@ -246,197 +246,178 @@ class Pacsy:
         self.total_count=43; self.total_size="214,85 MiB"; self.total_installed="798,73 MiB"; self.total_net="-1,08 MiB"
         self.status="Pakete werden empfangen ..."; self.prompt="Installation fortsetzen? [J/n]"
 
-    def lane_game(self, lane:RepoLane, width:int)->str:
-        """Render the reference-style miniature Pac-Man level for a repo lane."""
-        width=max(14,min(30,width))
-        pct=max(0,min(100,lane.percent))
+    def lane_game(self, seed:int, percent:int, width:int, palette:tuple[str,str,str])->str:
+        """Reference-style Pac-Man track: walls, pellets, Pac-Man, ghosts and fruit."""
+        width=max(18,width)
+        pct=max(0,min(100,percent))
         now=time.monotonic()
+        pac=min(width-1,int(pct*(width-1)/100))
+        g1=int((now*4.8+seed%width)%width)
+        g2=int((now*3.4+(seed//7)%width)%width)
+        fruit=int((width*.78+now*1.1+seed%9)%width)
+        a,b,ghost=palette
 
-        # Pac-Man advances with the real download percentage. Ghost and fruit
-        # positions animate independently, so every lane looks alive.
-        pac_i=min(width-1,int(pct*(width-1)/100))
-        ghost_i=int(((now*5.0)+(lane.percent*0.31)) % width)
-        ghost2_i=int(((now*3.2)+(lane.percent*0.57)+width/3) % width)
-        fruit_i=int(((now*1.7)+(lane.percent*0.67)+width*0.72) % width)
-
-        row=[]
+        cells=[]
         for i in range(width):
-            if i==pac_i:
-                row.append(f"{YELLOW}{PAC_FRAMES[int(now*8)%2]}{RESET}")
-            elif i==ghost_i:
-                row.append(f"{RED}●{RESET}")
-            elif i==ghost2_i:
-                row.append(f"{MAGENTA}●{RESET}")
-            elif i==fruit_i:
-                row.append(f"{RED}◆{RESET}")
-            elif i<=pac_i:
-                row.append(f"{YELLOW}·{RESET}")
+            if i==pac:
+                cells.append(f"{YELLOW}{PAC_FRAMES[int(now*9)%2]}{RESET}")
+            elif i==g1:
+                cells.append(f"{ghost}●{RESET}")
+            elif i==g2:
+                cells.append(f"{MAGENTA}●{RESET}")
+            elif i==fruit:
+                cells.append(f"{RED}◆{RESET}")
+            elif i < pac:
+                cells.append(f"{a}·{RESET}")
+            elif i in (2,width-3):
+                cells.append(f"{WHITE}●{RESET}")
             else:
-                row.append(f"{GRAY}·{RESET}")
+                cells.append(f"{b}·{RESET}")
 
-        # A box around the lane makes it visually match the reference image.
-        return f"{YELLOW}┌{RESET}{''.join(row)}{YELLOW}┐{RESET}"
+        top=f"{a}╭{'─'*width}╮{RESET}"
+        mid=f"{a}│{RESET}{''.join(cells)}{a}│{RESET}"
+        bottom=f"{a}╰{'─'*width}╯{RESET}"
+        return [top,mid,bottom]
 
-    def lane(self,lane:RepoLane,width:int)->str:
-        colors={"core":BLUE,"extra":YELLOW,"multilib":RED,"cachyos":CYAN}
-        c=colors.get(lane.repo,CYAN)
-        name=(lane.current or "Warte ...")[:15]
-        game=self.lane_game(lane,max(12,min(25,width-55)))
-        return (
-            f"{c}{lane.repo:<8}{RESET} {name:<15} "
-            f"{lane.speed or '--':>10} {lane.eta or '--:--':>5} "
-            f"{c}│{RESET}{game}{c}│{RESET} {lane.percent:3d}%"
-        )
-
-    def package_table(self,rows:int,width:int)->List[str]:
-        title=f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*5)%2]}{RESET}  {CYAN}{BOLD}Pakete ({len(self.packages)}){RESET}"
-        selected=[self.packages[k] for k in self.order[-min(rows,8):]]
-        if width<100:
-            out=[title]
-            for p in selected:
-                status="↑" if p.old!=p.new else "="
-                out.append(f"{status} {p.repo}/{p.name[:24]:<24} {p.old[:11]:>11} → {p.new[:11]:<11} {p.size or '--':>9}")
-            return out
-        out=[title,f"{DIM}{'Paket':<34} {'Alte Version':<16} {'Neue Version':<16} {'Netto':>10} {'Download':>12}{RESET}"]
-        for p in selected:
-            net="0,00 MiB" if p.old==p.new else (p.size or "--")
-            out.append(f"{WHITE}{p.repo+'/'+p.name:<34}{RESET} {p.old:<16} {GREEN}{'↑ '+p.new:<16}{RESET} {YELLOW}{net:>10}{RESET} {p.size or '--':>12}")
-        return out
-
-    def one_line_game(self,p:Package,width:int)->str:
-        length=max(12,min(34,width)); filled=int(length*p.percent/100)
-        if p.percent>=100:
-            return f"{GREEN}┌"+"─"*length+f"┐{RESET} {GREEN}★ 100%{RESET}"
-        ghost_pos=max(0,min(length-1,int(((p.percent+32)%100)/100*length)))
-        chars=[]
-        for i in range(length):
-            if i==filled: chars.append(f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET}")
-            elif i==ghost_pos: chars.append(f"{MAGENTA}●{RESET}")
-            elif i<filled: chars.append(f"{YELLOW}·{RESET}")
-            else: chars.append(f"{GRAY}·{RESET}")
-        return f"{CYAN}┌"+"".join(chars)+f"┐{RESET}"
-
-    def master_bar(self,width:int)->str:
-        if self.total_percent>=100: return f"{GREEN}"+"━"*width+f"{RESET} {GREEN}★{RESET}"
-        n=int(width*self.total_percent/100)
-        return f"{GREEN}"+"━"*n+f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET}{GRAY}"+"─"*max(0,width-n-1)+f"{RESET}"
+    def one_line_game(self,p:Package,width:int,palette:tuple[str,str,str])->str:
+        return self.lane_game(p.seed,p.percent,width,palette)[1]
 
     @staticmethod
-    def _visible_len(text:str)->int:
+    def _vlen(text:str)->int:
         return len(strip_ansi(text))
 
     @classmethod
-    def _fit_line(cls,text:str,width:int)->str:
-        # Never let a dashboard row wrap on Android/Termux.
-        if cls._visible_len(text) <= width:
+    def _fit(cls,text:str,width:int)->str:
+        if cls._vlen(text)<=width:
             return text
-        clean=strip_ansi(text)
-        return clean[:max(0,width-1)]+"…"
+        return strip_ansi(text)[:max(1,width-1)]+"…"
 
-    def _box(self, title:str, body:List[str], width:int, accent:str=CYAN)->List[str]:
+    def _panel(self,title:str,body:List[str],width:int,accent:str=CYAN)->List[str]:
         width=max(40,width)
         inner=width-2
-        clean_title=strip_ansi(title)[:max(8,inner-6)]
-        top=f"╭─ {clean_title} "+"─"*max(1,width-len(clean_title)-4)+"╮"
-        bottom="╰"+"─"*(width-2)+"╯"
+        title_clean=strip_ansi(title)[:max(8,inner-8)]
+        top=f"╭─ {title_clean} "+"─"*max(1,width-len(title_clean)-4)+"╮"
         out=[f"{accent}{top}{RESET}"]
-        for line in body:
-            out.append(self._fit_line(line,inner))
-        out.append(f"{accent}{bottom}{RESET}")
+        out.extend(self._fit(x,inner) for x in body)
+        out.append(f"{accent}╰{'─'*(width-2)}╯{RESET}")
+        return out
+
+    def package_table(self,rows:int,width:int)->List[str]:
+        pkgs=[self.packages[k] for k in self.order[-rows:]]
+        if not pkgs:
+            return [f"{DIM}Noch keine Pakete von pacman empfangen.{RESET}"]
+
+        if width<100:
+            out=[
+                f"{BOLD}{CYAN}Paket{RESET}                 {BOLD}ALT → NEU{RESET}        {BOLD}DL{RESET}"
+            ]
+            for p in pkgs:
+                change=f"{p.old[:9]}→{p.new[:9]}"
+                out.append(
+                    f"{p.repo[:7]:<7}/{p.name[:17]:<17} "
+                    f"{change:<19} {p.size or '--':>9}"
+                )
+            return out
+
+        out=[
+            f"{DIM}{'Paket':<32} {'Alte Version':<15} {'Neue Version':<15} {'Netto':>10} {'Download':>12}{RESET}"
+        ]
+        for p in pkgs:
+            net="0,00 MiB" if p.old==p.new else (p.size or "--")
+            out.append(
+                f"{p.repo+'/'+p.name:<32} {p.old:<15} "
+                f"{GREEN}{p.new:<15}{RESET} {YELLOW}{net:>10}{RESET} {p.size or '--':>12}"
+            )
         return out
 
     def render(self)->str:
         cols,rows=shutil.get_terminal_size((80,40))
-        # Termux can report a drawable width that is a little smaller while
-        # the Android keyboard is open, so keep a small safety margin.
-        compact=cols<110
-        render_width=max(40,cols-4 if compact else cols-2)
-        inner=render_width-2
+        # Termux with the soft keyboard needs a little breathing room.
+        compact=cols<105
+        width=max(40,cols-4 if compact else cols-2)
+        inner=width-2
         lines=[]
 
-        # Reference-style header: compact on Termux, wide on desktop.
-        lines.append(f"{CYAN}{BOLD}╭─◈ CACHYOS PACMA-SY "+"─"*max(1,inner-22)+"╮{RESET}")
+        # Header deliberately mirrors the reference: logo/title, mode and a
+        # clean top rule rather than a generic terminal dashboard.
+        title=f"{CYAN}{BOLD}CACHYOS  PACMA-SY{RESET}"
+        mode=f"{DIM}{'DEMO' if self.demo else 'LIVE  •  pacman -Syu'}{RESET}"
+        lines.append(f"{CYAN}╭─{RESET} {title}  {mode} {CYAN}{'─'*max(1,inner-28)}╮{RESET}")
         lines.append(
-            f"{CYAN}│{RESET} {YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET} "
-            f"{BOLD}pacman Systemaktualisierung{RESET} "
-            f"{DIM}{'live PTY / Pac-Man mode' if not compact else 'Pac-Man mode'}{RESET}"
+            f"{CYAN}│{RESET} {YELLOW}{PAC_FRAMES[int(time.monotonic()*9)%2]}{RESET} "
+            f"{BOLD}Systemaktualisierung{RESET}   {self.status[:max(10,inner-30)]}"
         )
-        lines.append(f"{CYAN}╰"+"─"*(inner-2)+"╯{RESET}")
-        lines.append("")
-        lines.append(f"{CYAN}◆{RESET} {BOLD}Systemstatus{RESET}  {self.status[:max(10,render_width-24)]}")
-        lines.append(
-            f"{GREEN}◆{RESET} Gesamtfortschritt {self.total_percent:3d}% "
-            f"{self.master_bar(max(12,min(30,render_width-38)))}"
-        )
+        lines.append(f"{CYAN}╰{'─'*(width-2)}╯{RESET}")
         lines.append("")
 
+        # Overall progress, reference-style.
+        barw=max(20,min(44,inner-27))
+        filled=int(barw*self.total_percent/100)
+        bar=f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*9)%2]}{RESET}"
+        if filled:
+            bar=f"{GREEN}{'━'*(filled-1)}{RESET}"+bar
+        bar+=f"{GRAY}{'─'*max(0,barw-filled)}{RESET}"
+        lines.append(f"{CYAN}◆{RESET} {BOLD}Gesamtfortschritt{RESET} {self.total_percent:3d}% {bar}")
+        lines.append("")
+
+        repo_colors={
+            "core":(BLUE,BLUE,BLUE),
+            "extra":(YELLOW,YELLOW,YELLOW),
+            "multilib":(RED,RED,RED),
+            "cachyos":(CYAN,CYAN,CYAN),
+        }
         repo_body=[]
         for repo in REPOS:
             lane=self.lanes[repo]
-            if compact:
-                colors={"core":BLUE,"extra":YELLOW,"multilib":RED,"cachyos":CYAN}
-                rc=colors.get(repo,CYAN)
-                game=self.lane_game(lane,max(14,min(20,render_width-58)))
-                repo_body.append(
-                    f"{rc}{repo:<8}{RESET} {lane.current[:13]:<13} "
-                    f"{lane.percent:3d}% {game}"
-                )
-            else:
-                repo_body.append("  "+self.lane(lane,cols))
-        lines += self._box("Repository / Download-Fortschritt",repo_body,render_width)
-
+            pal=repo_colors[repo]
+            game=self.lane_game(seed_for(repo),lane.percent,max(18,min(30,inner-43)),pal)
+            repo_body.append(
+                f"{pal[0]}{repo:<8}{RESET} {lane.current[:12] if lane.current else 'Warte ...':<12} "
+                f"{lane.speed or '--':>9} {lane.eta or '--:--':>5} {lane.percent:3d}% "
+                f"{game[1]}"
+            )
+        lines += self._panel("Repository / Download-Fortschritt",repo_body,width)
         lines.append("")
-        # Reference image has a dense package table. Keep five useful rows on
-        # Android and eight on wide terminals.
+
         table_rows=5 if compact else 9
-        table=self.package_table(table_rows,render_width)
-        lines += self._box(
-            f"{PAC_FRAMES[int(time.monotonic()*5)%2]}  Pakete ({len(self.packages)})",
-            table,render_width
+        lines += self._panel(
+            f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET}  Pakete ({len(self.packages)})",
+            self.package_table(table_rows,width),width,YELLOW
         )
-
         lines.append("")
-        game_body=[]
+
         visible=[self.packages[k] for k in self.order[-(5 if compact else 8):]]
+        game_body=[]
         if not visible:
             game_body=[f"{DIM}Pac-Man wartet auf das erste Paket ...{RESET}"]
         else:
             for p in visible:
-                if compact:
-                    barw=max(12,min(20,render_width-52))
-                    stats=f"{p.percent:3d}%"
-                    game_body.append(
-                        f"{CYAN}{p.name[:10]:<10}{RESET} {stats} "
-                        f"{self.one_line_game(p,barw)}"
-                    )
-                else:
-                    stats=f"{p.speed or '--':>10} {p.eta or '--:--':>5} {p.percent:3d}%"
-                    game_body.append(
-                        f"{CYAN}{p.name[:22]:<22}{RESET} {stats} "
-                        f"{self.one_line_game(p,max(16,render_width-44))}"
-                    )
-        lines += self._box(
-            f"{PAC_FRAMES[int(time.monotonic()*5)%2]}  {self.prompt or 'Downloadfortschritt'}",
-            game_body,render_width
-        )
+                # Every package gets its own independent level and palette.
+                palette=(CYAN,YELLOW,CYAN) if p.seed%4==0 else (
+                    (YELLOW,GRAY,YELLOW) if p.seed%4==1 else
+                    ((RED,GRAY,RED) if p.seed%4==2 else (MAGENTA,GRAY,MAGENTA))
+                )
+                track=self.lane_game(
+                    p.seed,p.percent,max(18,min(34,inner-34)),palette
+                )[1]
+                label=f"{p.name[:18]:<18}"
+                stats=f"{p.percent:3d}% {p.speed or '--':>9} {p.eta or '--:--':>5}"
+                game_body.append(f"{CYAN}{label}{RESET} {stats} {track}")
 
+        lines += self._panel(
+            f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET}  Downloadfortschritt",
+            game_body,width
+        )
         lines.append("")
-        if compact:
-            lines.append(
-                f"{CYAN}◆{RESET} {BOLD}Gesamt{RESET} "
-                f"({len(self.packages)}/{self.total_count or len(self.packages)})  "
-                f"DL {self.total_size or '--'}  INST {self.total_installed or '--'}  "
-                f"Netto {self.total_net or '--'}  {self.total_percent:3d}%"
-            )
-        else:
-            lines.append(
-                f"{CYAN}◆{RESET} {BOLD}Gesamt{RESET} "
-                f"({len(self.packages)}/{self.total_count or len(self.packages)})  "
-                f"Download {self.total_size or '--'}  "
-                f"Installiert {self.total_installed or '--'}  "
-                f"Netto {self.total_net or '--'}  {self.total_percent:3d}%"
-            )
-        lines.append(f"{DIM}Ctrl+C beendet die Ansicht; Eingaben werden unverändert an pacman weitergereicht.{RESET}")
+        lines.append(
+            f"{CYAN}◆{RESET} {BOLD}Gesamt{RESET} "
+            f"({len(self.packages)}/{self.total_count or len(self.packages)})  "
+            f"Download {self.total_size or '--'}  "
+            f"Installiert {self.total_installed or '--'}  "
+            f"Netto {self.total_net or '--'}  {self.total_percent:3d}%"
+        )
+        if not compact:
+            lines.append(f"{DIM}Ctrl+C beendet die Ansicht; Eingaben werden unverändert an pacman weitergereicht.{RESET}")
         return "\n".join(lines)
 
     def screen(self)->None:
