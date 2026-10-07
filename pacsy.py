@@ -246,13 +246,34 @@ class Pacsy:
         self.total_count=43; self.total_size="214,85 MiB"; self.total_installed="798,73 MiB"; self.total_net="-1,08 MiB"
         self.status="Pakete werden empfangen ..."; self.prompt="Installation fortsetzen? [J/n]"
 
+    def lane_game(self, lane:RepoLane, width:int)->str:
+        width=max(12,min(30,width))
+        pct=max(0,min(100,lane.percent))
+        pac_i=min(width-1,int(pct*max(0,width-1)/100))
+        ghost_i=min(width-1,max(0,int(((pct+31)%100)*max(0,width-1)/100)))
+        fruit_i=min(width-1,max(0,int(((pct+67)%100)*max(0,width-1)/100)))
+        chars=[]
+        for i in range(width):
+            if i==pac_i:
+                chars.append(f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET}")
+            elif i==ghost_i:
+                chars.append(f"{MAGENTA}👻{RESET}")
+            elif i==fruit_i:
+                chars.append(f"{RED}🍓{RESET}")
+            else:
+                chars.append(f"{YELLOW}·{RESET}" if i<pac_i else f"{GRAY}·{RESET}")
+        return "".join(chars)
+
     def lane(self,lane:RepoLane,width:int)->str:
         colors={"core":BLUE,"extra":YELLOW,"multilib":RED,"cachyos":CYAN}
         c=colors.get(lane.repo,CYAN)
-        name=(lane.current or "Warte ...")[:18]; pct=lane.percent
-        barw=max(12,min(25,width-34)); filled=int(barw*pct/100)
-        dots="·"*filled+" "*max(0,barw-filled)
-        return f"{c}{lane.repo:<9}{RESET} {name:<18} {lane.speed or '--':>10} {lane.eta or '--:--':>5} {c}┌{dots}┐{RESET} {pct:3d}%"
+        name=(lane.current or "Warte ...")[:15]
+        game=self.lane_game(lane,max(12,min(25,width-55)))
+        return (
+            f"{c}{lane.repo:<8}{RESET} {name:<15} "
+            f"{lane.speed or '--':>10} {lane.eta or '--:--':>5} "
+            f"{c}│{RESET}{game}{c}│{RESET} {lane.percent:3d}%"
+        )
 
     def package_table(self,rows:int,width:int)->List[str]:
         title=f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*5)%2]}{RESET}  {CYAN}{BOLD}Pakete ({len(self.packages)}){RESET}"
@@ -288,110 +309,108 @@ class Pacsy:
         return f"{GREEN}"+"━"*n+f"{YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET}{GRAY}"+"─"*max(0,width-n-1)+f"{RESET}"
 
     def _box(self, title:str, body:List[str], width:int, accent:str=CYAN)->List[str]:
-        width=max(24,width)
-        clean_title=title[:width-6]
+        width=max(48,width)
+        # Keep the frame width tied to the physical terminal. Never slice a
+        # string containing ANSI escapes: doing so can corrupt escape sequences
+        # and make Android wrap the next line.
+        clean_title=title[:max(8,width-8)]
         top=f"╭─ {clean_title} "+"─"*max(1,width-len(clean_title)-4)+"╮"
         bottom="╰"+"─"*(width-2)+"╯"
-        out=[f"{accent}{top[:width]}{RESET}"]
-        for raw in body:
-            # ANSI-aware enough for this renderer: content itself is kept short
-            # so Android/Termux never receives an overlong physical line.
-            out.append(raw[:width])
+        out=[f"{accent}{top}{RESET}"]
+        out.extend(body)
         out.append(f"{accent}{bottom}{RESET}")
         return out
 
     def render(self)->str:
         cols,rows=shutil.get_terminal_size((80,40))
-        # Never force a 70-column minimum. The physical terminal width is the
-        # source of truth; overlong ANSI lines were causing the broken wrapping
-        # visible on Android/Termux.
         cols=max(48,cols)
         compact=cols<96
         inner=cols-2
         lines=[]
 
-        header_title="CACHYOS PACMA-SY"
-        header_sub="pacman Systemaktualisierung"
-        mode="live PTY / Pac-Man"
-        if compact:
-            lines.append(f"{CYAN}╭─◈ {header_title} "+"─"*max(1,inner-5-len(header_title))+"╮{RESET}")
-            lines.append(f"{CYAN}│{RESET} {YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET} {BOLD}{header_sub}{RESET}")
-            lines.append(f"{CYAN}╰"+"─"*(inner-2)+"╯{RESET}")
-        else:
-            lines.append(f"{CYAN}{BOLD}╭─◈ {header_title} "+"─"*max(1,inner-6-len(header_title))+"╮{RESET}")
-            lines.append(f"{CYAN}│{RESET} {YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET} {BOLD}{header_sub}{RESET} {DIM}{mode}{RESET}")
-            lines.append(f"{CYAN}╰"+"─"*(inner-2)+"╯{RESET}")
-
+        # Reference-style header: compact on Termux, wide on desktop.
+        lines.append(f"{CYAN}{BOLD}╭─◈ CACHYOS PACMA-SY "+"─"*max(1,inner-22)+"╮{RESET}")
+        lines.append(
+            f"{CYAN}│{RESET} {YELLOW}{PAC_FRAMES[int(time.monotonic()*8)%2]}{RESET} "
+            f"{BOLD}pacman Systemaktualisierung{RESET} "
+            f"{DIM}{'live PTY / Pac-Man mode' if not compact else 'Pac-Man mode'}{RESET}"
+        )
+        lines.append(f"{CYAN}╰"+"─"*(inner-2)+"╯{RESET}")
         lines.append("")
-        status=self.status[:max(18,cols-20)]
-        lines.append(f"{CYAN}◆{RESET} {BOLD}Systemstatus{RESET}  {status}")
-        lines.append(f"{GREEN}◆{RESET} Gesamtfortschritt {self.total_percent:3d}% {self.master_bar(min(32,max(10,cols-38)))}")
+        lines.append(f"{CYAN}◆{RESET} {BOLD}Systemstatus{RESET}  {self.status[:cols-24]}")
+        lines.append(
+            f"{GREEN}◆{RESET} Gesamtfortschritt {self.total_percent:3d}% "
+            f"{self.master_bar(max(12,min(34,cols-38)))}"
+        )
         lines.append("")
 
         repo_body=[]
         for repo in REPOS:
             lane=self.lanes[repo]
             if compact:
-                c={"core":BLUE,"extra":YELLOW,"multilib":RED,"cachyos":CYAN}.get(repo,CYAN)
-                barw=max(10,min(24,cols-45))
-                filled=int(barw*lane.percent/100)
-                bar="·"*filled+"·"*max(0,barw-filled)
+                colors={"core":BLUE,"extra":YELLOW,"multilib":RED,"cachyos":CYAN}
+                rc=colors.get(repo,CYAN)
+                game=self.lane_game(lane,max(12,min(21,cols-57)))
                 repo_body.append(
-                    f"{c}{repo:<8}{RESET} {lane.current[:14]:<14} "
-                    f"{lane.percent:3d}% {c}│{bar}│{RESET}"
+                    f"{rc}{repo:<8}{RESET} {lane.current[:13]:<13} "
+                    f"{lane.percent:3d}% {rc}│{RESET}{game}{rc}│{RESET}"
                 )
             else:
                 repo_body.append("  "+self.lane(lane,cols))
         lines += self._box("Repository / Download-Fortschritt",repo_body,cols)
 
         lines.append("")
-        table_width=cols
-        if compact:
-            table_body=self.package_table(min(5,max(2,rows//12)),cols)
-        else:
-            table_body=self.package_table(8,cols)
-        # package_table itself switches to compact columns below 100 columns.
-        lines += self._box(f"{PAC_FRAMES[int(time.monotonic()*5)%2]}  Pakete ({len(self.packages)})",table_body,table_width)
-
-        lines.append("")
-        game_body=[]
-        visible=[self.packages[k] for k in self.order[-(6 if not compact else 4):]]
-        if not visible:
-            game_body=[f"{DIM}Pac-Man wartet auf das erste Paket ...{RESET}"]
-        elif compact:
-            barw=max(14,min(28,cols-43))
-            for p in visible:
-                stats=f"{p.percent:3d}%"
-                game_body.append(
-                    f"{CYAN}{p.name[:12]:<12}{RESET} {stats} "
-                    f"{self.one_line_game(p,barw)}"
-                )
-        else:
-            barw=max(20,cols-48)
-            for p in visible:
-                stats=f"{p.speed or '--':>10} {p.eta or '--:--':>5} {p.percent:3d}%"
-                game_body.append(
-                    f"{CYAN}{p.name[:26]:<26}{RESET} {stats}  {self.one_line_game(p,barw)}"
-                )
+        # Reference image has a dense package table. Keep five useful rows on
+        # Android and eight on wide terminals.
+        table_rows=5 if compact else 9
+        table=self.package_table(table_rows,cols)
         lines += self._box(
-            f"{PAC_FRAMES[int(time.monotonic()*5)%2]}  {self.prompt or 'Downloadfortschritt'}",
-            game_body, cols
+            f"{PAC_FRAMES[int(time.monotonic()*5)%2]}  Pakete ({len(self.packages)})",
+            table,cols
         )
 
         lines.append("")
-        total=f"◆ Gesamt ({len(self.packages)}/{self.total_count or len(self.packages)})"
+        game_body=[]
+        visible=[self.packages[k] for k in self.order[-(5 if compact else 8):]]
+        if not visible:
+            game_body=[f"{DIM}Pac-Man wartet auf das erste Paket ...{RESET}"]
+        else:
+            for p in visible:
+                if compact:
+                    barw=max(12,min(22,cols-52))
+                    stats=f"{p.percent:3d}%"
+                    game_body.append(
+                        f"{CYAN}{p.name[:12]:<12}{RESET} {stats} "
+                        f"{self.one_line_game(p,barw)}"
+                    )
+                else:
+                    stats=f"{p.speed or '--':>10} {p.eta or '--:--':>5} {p.percent:3d}%"
+                    game_body.append(
+                        f"{CYAN}{p.name[:26]:<26}{RESET} {stats} "
+                        f"{self.one_line_game(p,max(20,cols-48))}"
+                    )
+        lines += self._box(
+            f"{PAC_FRAMES[int(time.monotonic()*5)%2]}  {self.prompt or 'Downloadfortschritt'}",
+            game_body,cols
+        )
+
+        lines.append("")
         if compact:
             lines.append(
-                f"{CYAN}{total}{RESET}  DL {self.total_size or '--'}  "
-                f"INST {self.total_installed or '--'}  {self.total_percent:3d}%"
+                f"{CYAN}◆{RESET} {BOLD}Gesamt{RESET} "
+                f"({len(self.packages)}/{self.total_count or len(self.packages)})  "
+                f"DL {self.total_size or '--'}  INST {self.total_installed or '--'}  "
+                f"Netto {self.total_net or '--'}  {self.total_percent:3d}%"
             )
         else:
             lines.append(
-                f"{CYAN}{total}{RESET}  Download {self.total_size or '--'}  "
-                f"Installiert {self.total_installed or '--'}  Netto {self.total_net or '--'}  "
-                f"{self.total_percent:3d}%"
+                f"{CYAN}◆{RESET} {BOLD}Gesamt{RESET} "
+                f"({len(self.packages)}/{self.total_count or len(self.packages)})  "
+                f"Download {self.total_size or '--'}  "
+                f"Installiert {self.total_installed or '--'}  "
+                f"Netto {self.total_net or '--'}  {self.total_percent:3d}%"
             )
-        lines.append(f"{DIM}Ctrl+C beendet die Ansicht; Eingaben gehen direkt an pacman.{RESET}")
+        lines.append(f"{DIM}Ctrl+C beendet die Ansicht; Eingaben werden unverändert an pacman weitergereicht.{RESET}")
         return "\n".join(lines)
 
     def screen(self)->None:
