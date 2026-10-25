@@ -2,24 +2,31 @@
 set -euo pipefail
 
 PREFIX="${PREFIX:-/usr/local/bin}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET="$PREFIX/pacsy"
-SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pacsy.py"
+SHELL_TARGET="$PREFIX/pacsy-shell"
+SOURCE="$ROOT/pacsy.py"
+SHELL_SOURCE="$ROOT/pacsy-shell.py"
 
-# Use a symlink so `git pull` immediately updates the installed command.
-# This avoids the old copied /usr/local/bin/pacsy surviving a repository update.
 if [[ "${EUID}" -eq 0 ]]; then
     ln -sfn "$SOURCE" "$TARGET"
-    chmod +x "$SOURCE"
+    ln -sfn "$SHELL_SOURCE" "$SHELL_TARGET"
+    chmod +x "$SOURCE" "$SHELL_SOURCE"
 else
     sudo ln -sfn "$SOURCE" "$TARGET"
-    chmod +x "$SOURCE"
+    sudo ln -sfn "$SHELL_SOURCE" "$SHELL_TARGET"
+    chmod +x "$SOURCE" "$SHELL_SOURCE"
 fi
 
 echo
 echo "✓ Pacma-sy linked: $TARGET -> $SOURCE"
+echo "✓ Pacsy Shell linked: $SHELL_TARGET -> $SHELL_SOURCE"
 echo
-echo "Demo:"
+echo "Update UI demo:"
 echo "  pacsy --demo"
 echo
-echo "Live:"
+echo "Live package update:"
 echo "  pacsy"
+echo
+echo "Fullscreen shell dashboard:"
+echo "  pacsy-shell"
